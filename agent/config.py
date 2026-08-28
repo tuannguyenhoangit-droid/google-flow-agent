@@ -59,9 +59,25 @@ TTS_TEMPLATES_DIR = SHARED_OUTPUT_DIR / "tts_templates"
 MUSIC_OUTPUT_DIR = SHARED_OUTPUT_DIR / "music"
 
 # ─── TTS (OmniVoice) ─────────────────────────────────────────
+TTS_BACKEND = os.environ.get("TTS_BACKEND", "local").strip().lower()
 TTS_MODEL = os.environ.get("TTS_MODEL", "k2-fsa/OmniVoice")
 TTS_DEVICE = os.environ.get("TTS_DEVICE", "cpu")  # MPS produces gibberish; CPU+fp32 works
 TTS_SAMPLE_RATE = int(os.environ.get("TTS_SAMPLE_RATE", "24000"))
+TTS_REMOTE_URL = os.environ.get("TTS_REMOTE_URL", "").strip().rstrip("/")
+TTS_REMOTE_TOKEN = os.environ.get("TTS_REMOTE_TOKEN", "")
+TTS_REMOTE_TIMEOUT_S = float(os.environ.get("TTS_REMOTE_TIMEOUT_S", "180"))
+TTS_REMOTE_MAX_BYTES = int(os.environ.get("TTS_REMOTE_MAX_BYTES", str(50 * 1024 * 1024)))
+
+# ─── Standalone OmniVoice API ────────────────────────────────
+OMNIVOICE_API_HOST = os.environ.get("OMNIVOICE_API_HOST", "127.0.0.1")
+OMNIVOICE_API_PORT = int(os.environ.get("OMNIVOICE_API_PORT", "8200"))
+OMNIVOICE_API_TOKEN = os.environ.get("OMNIVOICE_API_TOKEN", "")
+OMNIVOICE_MAX_REF_AUDIO_BYTES = int(
+    os.environ.get("OMNIVOICE_MAX_REF_AUDIO_BYTES", str(10 * 1024 * 1024))
+)
+OMNIVOICE_MAX_REQUEST_BYTES = int(
+    os.environ.get("OMNIVOICE_MAX_REQUEST_BYTES", str(12 * 1024 * 1024))
+)
 
 # ─── Review / Claude Vision ──────────────────────────────────
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
