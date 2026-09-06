@@ -4,6 +4,33 @@ Usage: `/gen-chain-videos <project_id> <video_id>`
 
 This creates smooth transitions between scenes in a chain by using the **NEXT scene's image as the endImage** of the current scene's video, so the last frame of scene N matches the first frame of scene N+1 → seamless concat.
 
+## Before you start: chaining is not on the new Flow API
+
+Flow's `flow.google.com` payload has an aspect slot and a single source-image
+slot; the **end-image slot was never captured**, so a start+end frame request
+cannot be built. `GENERATE_VIDEO` with an `endImage` fails immediately with
+`UNSUPPORTED_ON_BATCH_API` (terminal — it is not retried).
+
+```bash
+curl -s http://127.0.0.1:8100/api/flow/status | python3 -c "
+import sys, json
+s = json.load(sys.stdin)
+print('transport:', s['transport'], '| degraded fallback:', s['allow_degraded'])
+"
+```
+
+Two honest options — tell the user which one you are taking:
+
+1. **`FLOW_ALLOW_DEGRADED=1`** (restart the agent with it): each scene renders as
+   plain i2v off its own start frame. The pipeline completes, but the cut
+   between scenes is **not** seamless — the chain invariant below does not hold.
+   Prefer `/fk-concat-fit-narrator` with a crossfade to hide the seams.
+2. **Restore chaining properly** by capturing the end-image slot off the Flow
+   UI — `docs/CAPTURE.md`. This is the only way to get the real behaviour back.
+
+Everything below describes the intended behaviour, which is what option 2
+restores.
+
 ## How chaining works
 
 For any scene that has a CHILD in the chain (i.e. some other scene with `parent_scene_id == this.id`):

@@ -11,6 +11,28 @@ Usage:
 
 ---
 
+## What the model keys mean on the current Flow API
+
+Since Flow moved to `flow.google.com`, aspect ratio is its own payload slot and
+the REST-era suffixed names (`…_portrait`, `…_fl`, `…_relaxed`) are **rejected
+outright**. `models.json` still stores the old [tier][gen_type][aspect] map for
+the legacy path, and `resolve_video_model()` folds whatever it finds onto the
+three names the new path accepts:
+
+| Wire name | What it is |
+|---|---|
+| `veo_3_1_i2v_s_fast_ultra` | anything whose key mentions `ultra` |
+| `veo_3_1_i2v_lite` | anything whose key mentions `lite` |
+| `veo_3_1_i2v_lite_low_priority` | the default, and anything unrecognised |
+
+So changing a Landscape vs Portrait key has **no effect** on the batch path —
+only the quality tier survives the fold. `r2v` and `start_end` keys are moot
+there too: both are unported.
+
+Image models are unaffected: `GEM_PIX_2` (Nano Banana Pro) and `NARWHAL`
+(Banana 2) are both accepted, and `default_image_model` in `models.json` picks
+which nickname is used.
+
 ## Step 1: Show Current Models
 
 ```bash

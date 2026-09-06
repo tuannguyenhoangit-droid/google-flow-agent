@@ -104,7 +104,28 @@ Camera stays behind. Viewers see the leader's power through body language, not f
 | Military rank + origin | The Field Marshal, The Admiral | Military figures |
 | Generic role | The Royal Advisor, The Strategist | Secondary characters |
 
+## Step 0: Make sure there is a Flow project to attach to
+
+Since Flow moved to `flow.google.com`, Flow Kit cannot create Flow projects —
+the endpoint that did it went with the migration. Every generation is scoped to
+an existing one.
+
+```bash
+curl -s http://127.0.0.1:8100/api/flow/status | python3 -c "
+import sys, json
+s = json.load(sys.stdin)
+print('Flow project:', s.get('flow_project_id') or 'NONE — create one in the Flow UI')
+"
+```
+
+If it prints NONE, ask the user to open `https://flow.google.com/`, create a
+project, and copy the uuid out of the URL. Then either pin it
+(`export FLOW_PROJECT_ID=<uuid>` before starting the agent) or pass it as
+`flow_project_id` in Step 1. Without it every request fails `NO_FLOW_PROJECT`.
+
 ## Step 1: Create project with all entities
+
+Add `"flow_project_id": "<uuid>"` if you are not using the pinned one.
 
 ```bash
 curl -X POST http://127.0.0.1:8100/api/projects \

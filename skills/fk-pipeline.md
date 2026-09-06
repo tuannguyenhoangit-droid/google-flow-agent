@@ -5,7 +5,7 @@ Auto-detect project state and run the correct stages (continuation or full run).
 Usage: `/fk-pipeline [project_id] [orientation] [options]`
 
 Options:
-- `--upscale` — include 4K upscale stage (TIER_TWO only)
+- `--upscale` — include 4K upscale stage. **Unavailable since Flow moved** — no upsampler rpc has been captured on `flow.google.com`, so every upscale fails `UNSUPPORTED_ON_BATCH_API` (terminal, not retried). Warn the user and run without it; the 1080p render is the deliverable. See `docs/CAPTURE.md`.
 - `--tts` — include TTS narration stage (parallel with upscale)
 - `--download` — auto-download 4K files as upscales complete
 - `--concat` — run concat after all stages done

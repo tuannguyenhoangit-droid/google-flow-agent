@@ -9,12 +9,16 @@ Useful for: setting channel icons, covers, or any local image as an entity refer
 ```bash
 curl -s http://127.0.0.1:8100/health
 ```
-Must have `extension_connected: true` AND flow key present. Abort if not.
+Must have `extension_connected: true`. Abort if not.
 
 ```bash
 curl -s http://127.0.0.1:8100/api/flow/status
-# Must return: {"connected": true, "flow_key_present": true}
+# Must return: {"connected": true, "transport": "batch", "flow_project_id": "<uuid>"}
+# flow_key_present is a legacy-path signal — false is expected here.
 ```
+
+The upload is scoped to a Flow project: pass `project_id`, or leave it out to
+use the pinned `FLOW_PROJECT_ID`. Without either you get `NO_FLOW_PROJECT`.
 
 ## Step 2: Upload image
 
