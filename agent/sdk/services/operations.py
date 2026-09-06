@@ -115,6 +115,10 @@ async def _poll_operations(
     poll_interval = VIDEO_POLL_INTERVAL
     elapsed = 0
     current_ops = operations
+    # The batch path attaches the operation's own grumble ("Media not found.")
+    # to a still-pending round. It is a diagnostic, not a verdict — finished
+    # jobs report it too — so it is only worth quoting if we time out.
+    last_complaint = None
 
     while elapsed < timeout:
         await asyncio.sleep(poll_interval)
@@ -136,6 +140,8 @@ async def _poll_operations(
         error_msg = ""
 
         for op in ops:
+            if op.get("complaint"):
+                last_complaint = op["complaint"]
             status = op.get("status", "")
             if status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
                 continue
@@ -159,7 +165,8 @@ async def _poll_operations(
         done_count = sum(1 for o in ops if o.get("status") == "MEDIA_GENERATION_STATUS_SUCCESSFUL")
         logger.debug("Poll %ds/%ds: %d/%d done", elapsed, timeout, done_count, len(ops))
 
-    return {"error": f"Polling timeout after {timeout}s"}
+    detail = f": {last_complaint}" if last_complaint else ""
+    return {"error": f"Polling timeout after {timeout}s{detail}"}
 
 
 class OperationService:
