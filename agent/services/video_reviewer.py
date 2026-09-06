@@ -125,7 +125,12 @@ async def _download_video(url: str, dest: Path) -> None:
 
 
 async def _download_via_get_media(media_id: str, dest: Path) -> None:
-    """Download video by fetching encoded content from get_media API."""
+    """Re-fetch a clip through the media record when its stored url has expired.
+
+    The two transports answer differently: the batch path hands back a freshly
+    signed url to download, the legacy REST path inlined the bytes as base64.
+    Try the url first, fall back to the encoded content.
+    """
     from agent.services.flow_client import get_flow_client
 
     client = get_flow_client()
@@ -134,18 +139,21 @@ async def _download_via_get_media(media_id: str, dest: Path) -> None:
         raise ValueError(f"get_media failed for {media_id}: {result['error']}")
 
     data = result.get("data", result)
-    # Video content is in video.encodedVideo or image.encodedImage (base64)
-    encoded = None
-    if isinstance(data, dict):
-        if "video" in data and isinstance(data["video"], dict):
-            encoded = data["video"].get("encodedVideo")
-        elif "image" in data and isinstance(data["image"], dict):
-            encoded = data["image"].get("encodedImage")
-        elif "encodedVideo" in data:
-            encoded = data["encodedVideo"]
+    if not isinstance(data, dict):
+        raise ValueError(f"Unreadable get_media response for {media_id}")
 
+    video = data.get("video") if isinstance(data.get("video"), dict) else {}
+    image = data.get("image") if isinstance(data.get("image"), dict) else {}
+
+    url = video.get("fifeUrl") or data.get("fifeUrl")
+    if url:
+        await _download_video(url, dest)
+        logger.info("Downloaded %s via a freshly signed url", media_id[:12])
+        return
+
+    encoded = video.get("encodedVideo") or image.get("encodedImage") or data.get("encodedVideo")
     if not encoded:
-        raise ValueError(f"No encoded content in get_media response for {media_id}")
+        raise ValueError(f"No video url or encoded content in get_media response for {media_id}")
 
     video_bytes = base64.standard_b64decode(encoded)
     with open(dest, "wb") as f:
