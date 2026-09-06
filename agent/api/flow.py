@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from agent.config import USE_BATCH_RPC, FLOW_PROJECT_ID, FLOW_ALLOW_DEGRADED
 from agent.services.flow_client import get_flow_client
 
 router = APIRouter(prefix="/flow", tags=["flow"])
@@ -61,10 +62,17 @@ class EditImageRequest(BaseModel):
 
 @router.get("/status")
 async def extension_status():
-    """Check if extension is connected."""
+    """Extension health, and which transport it is being asked to speak.
+
+    `flow_key_present` is a legacy-path signal: the batchexecute path has no
+    bearer token at all, so false is expected there rather than a fault.
+    """
     client = get_flow_client()
     return {
         "connected": client.connected,
+        "transport": "batch" if USE_BATCH_RPC else "legacy_rest",
+        "flow_project_id": FLOW_PROJECT_ID or None,
+        "allow_degraded": FLOW_ALLOW_DEGRADED,
         "flow_key_present": client._flow_key is not None,
     }
 
