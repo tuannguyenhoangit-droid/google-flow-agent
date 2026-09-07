@@ -74,7 +74,7 @@ For full API reference, workflow recipes, and video prompt guidelines, see `CLAU
 
 ## Skills
 
-This project has reusable skills in `skills/`. When the user says `/fk:<name>`, read `skills/fk:<name>.md` and follow the instructions inside.
+This project has reusable skills in `skills/`. When the user says `/fk-<name>`, read `skills/fk-<name>.md` and follow the instructions inside.
 
 | Skill | Purpose |
 |-------|---------|

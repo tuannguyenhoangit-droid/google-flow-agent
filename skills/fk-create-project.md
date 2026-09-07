@@ -456,3 +456,27 @@ curl -X PATCH http://127.0.0.1:8100/api/scenes/<SID> \
 **Patchable fields:** `prompt`, `video_prompt`, `transition_prompt`, `image_prompt`, `character_names`, `narrator_text`, `display_order`, `chain_type`, `parent_scene_id`.
 
 **Workflow:** create scenes → review all prompts → PATCH to improve → then run /fk-gen-refs and /fk-gen-images. Scenes are mutable — update freely before generation starts.
+
+## Step 5: Switch Active Project (REQUIRED)
+
+After all scenes are created, **always** switch the active project to the newly created one. Without this, downstream skills (`/fk-status`, `/fk-pipeline`, `/fk-monitor`, `/fk-dashboard`) will continue showing the previously-active project — confusing and a frequent source of errors.
+
+```bash
+curl -s -X PUT http://127.0.0.1:8100/api/active-project \
+  -H "Content-Type: application/json" \
+  -d '{"project_id":"<PID>"}'
+
+# Verify
+curl -s http://127.0.0.1:8100/api/active-project
+# Should print: {"project_id":"<PID>","project_name":"<your new project>",...}
+```
+
+**Print confirmation** to the user:
+```
+✅ Active project switched to: <project_name> (<PID>)
+   Video:        <VID>
+   Orientation:  HORIZONTAL | VERTICAL
+   Material:     <material>
+
+Next: /fk-gen-refs
+```

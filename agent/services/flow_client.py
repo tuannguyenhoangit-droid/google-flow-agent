@@ -38,8 +38,10 @@ class FlowClient:
     """Sends commands to Chrome extension via WebSocket."""
 
     def __init__(self):
-        self._extension_ws = None  # Set by WS server when extension connects
+        self._extension_ws = None  # Active authenticated extension connection
+        self._extensions: dict[object, dict] = {}
         self._pending: dict[str, asyncio.Future] = {}
+        self._pending_ws: dict[str, object] = {}
         self._flow_key: Optional[str] = None
         # Per-operation poll state. `_operation_projects` says which project
         # listing to look a finished media up in; `_operation_media` caches the
@@ -56,31 +58,127 @@ class FlowClient:
 
     def set_extension(self, ws):
         """Called when extension connects via WS."""
-        self._extension_ws = ws
+        self._extensions[ws] = {
+            "connected_at": time.time(),
+            "flow_key": None,
+            "token_captured_at": None,
+            "unavailable_until": 0,
+        }
+        # A new unauthenticated profile must not displace an already
+        # authenticated extension. It becomes active after token_captured.
+        if self._extension_ws is None:
+            self._extension_ws = ws
         self._ws_connect_count += 1
         self._ws_connected_at = time.time()
-        logger.info("Extension connected #%d (waiting for extension_ready/token_captured to sync)", self._ws_connect_count)
+        logger.info(
+            "Extension connected #%d (%d active connection(s)); "
+            "waiting for extension_ready/token_captured to sync",
+            self._ws_connect_count,
+            len(self._extensions),
+        )
 
-    def clear_extension(self):
+    def clear_extension(self, ws=None):
         """Called when extension disconnects."""
-        self._extension_ws = None
+        disconnected_ws = ws or self._extension_ws
+        if disconnected_ws is None:
+            return
+
+        self._extensions.pop(disconnected_ws, None)
         self._ws_disconnect_count += 1
         self._ws_last_disconnect_at = time.time()
-        # Cancel all pending futures (copy to avoid RuntimeError on concurrent modification)
-        pending_copy = list(self._pending.items())
-        count = len(pending_copy)
-        for req_id, future in pending_copy:
-            if not future.done():
+
+        # Only cancel requests that were sent through the disconnected socket.
+        # Requests owned by other Chrome profiles are still valid.
+        disconnected_pending = [
+            (req_id, self._pending.get(req_id))
+            for req_id, pending_ws in list(self._pending_ws.items())
+            if pending_ws is disconnected_ws
+        ]
+        for req_id, future in disconnected_pending:
+            if future is not None and not future.done():
                 future.set_exception(ConnectionError("Extension disconnected"))
-        self._pending.clear()
-        logger.warning("Extension disconnected, cleared %d pending requests", count)
+            self._pending_ws.pop(req_id, None)
+
+        if self._extension_ws is disconnected_ws:
+            self._extension_ws = self._select_extension(require_token=True)
+            if self._extension_ws is None:
+                self._extension_ws = self._select_extension(require_token=False)
+
+        active_session = self._extensions.get(self._extension_ws, {})
+        self._flow_key = active_session.get("flow_key")
+        logger.warning(
+            "Extension disconnected, cancelled %d owned request(s); "
+            "%d extension connection(s) remain",
+            len(disconnected_pending),
+            len(self._extensions),
+        )
+
+    def _extension_candidates(self, require_token: bool):
+        """Return usable extensions in preferred routing order."""
+        now = time.time()
+        candidates = []
+        for ws, session in self._extensions.items():
+            if require_token and not session.get("flow_key"):
+                continue
+            recency = (
+                session.get("token_captured_at")
+                if require_token
+                else session.get("connected_at")
+            )
+            candidates.append({
+                "ws": ws,
+                "available": session.get("unavailable_until", 0) <= now,
+                "active": ws is self._extension_ws,
+                "recency": recency or 0,
+            })
+
+        # Prefer an available active session, then the most recently
+        # authenticated alternatives. Temporarily unavailable sessions remain
+        # last-resort candidates so a single-profile setup can still recover.
+        candidates.sort(
+            key=lambda item: (
+                item["available"],
+                item["active"] and item["available"],
+                item["recency"],
+            ),
+            reverse=True,
+        )
+        return [item["ws"] for item in candidates]
+
+    def _select_extension(self, require_token: bool):
+        """Choose the preferred authenticated or connected extension."""
+        candidates = self._extension_candidates(require_token)
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def _should_failover(result: dict) -> bool:
+        """Return true for profile-local failures that another tab can solve."""
+        message = str(result.get("error") or result.get("data") or "").lower()
+        return any(marker in message for marker in (
+            "no_flow_key",
+            "no_flow_tab",
+            # Batch path: this profile's Flow tab cannot sign a request — it is
+            # signed out, still booting, or Chrome discarded it. Another
+            # profile's tab may be perfectly able to.
+            "no_at_token",
+            "flow_tab_discarded",
+            "no current window",
+            "extension not connected",
+            "extension disconnected",
+            "extension_switched",
+            "public_error_per_model_daily_quota_reached",
+            "public_error_user_quota_reached",
+        ))
 
     def set_flow_key(self, key: str):
         self._flow_key = key
+        if self._extension_ws in self._extensions:
+            self._extensions[self._extension_ws]["flow_key"] = key
+            self._extensions[self._extension_ws]["token_captured_at"] = time.time()
 
     @property
     def connected(self) -> bool:
-        return self._extension_ws is not None
+        return bool(self._extensions)
 
     @property
     def ws_stats(self) -> dict:
@@ -89,15 +187,26 @@ class FlowClient:
             uptime = int(time.time() - self._ws_connected_at)
         return {
             "connected": self.connected,
+            "active_connections": len(self._extensions),
+            "authenticated_connections": sum(
+                1 for session in self._extensions.values()
+                if session.get("flow_key")
+            ),
             "connects": self._ws_connect_count,
             "disconnects": self._ws_disconnect_count,
             "uptime_s": uptime,
         }
 
-    async def handle_message(self, data: dict):
+    async def handle_message(self, data: dict, websocket=None):
         """Handle incoming message from extension."""
         if data.get("type") == "token_captured":
-            self._flow_key = data.get("flowKey")
+            key = data.get("flowKey")
+            source_ws = websocket or self._extension_ws
+            if source_ws is not None and source_ws in self._extensions:
+                self._extensions[source_ws]["flow_key"] = key
+                self._extensions[source_ws]["token_captured_at"] = time.time()
+                self._extension_ws = source_ws
+            self._flow_key = key
             logger.info("Flow key captured from extension")
             asyncio.create_task(self._sync_tier())
             return
@@ -116,8 +225,9 @@ class FlowClient:
 
         if data.get("type") == "ping":
             # Respond to keepalive
-            if self._extension_ws:
-                await self._extension_ws.send(json.dumps({"type": "pong"}))
+            target_ws = websocket or self._extension_ws
+            if target_ws:
+                await target_ws.send(json.dumps({"type": "pong"}))
             return
 
         # Response to a pending request
@@ -283,27 +393,63 @@ class FlowClient:
         must check result.get("error") or use _is_ws_error() before reading data.
         Never raises; exceptions are caught and returned as error dicts.
         """
-        if not self._extension_ws:
+        if not self.connected:
             return {"error": "Extension not connected"}
 
-        req_id = str(uuid.uuid4())
-        future = asyncio.get_running_loop().create_future()
-        self._pending[req_id] = future
+        # A bearer token is only worth routing on when something is going to
+        # send one. The batchexecute path authenticates in the page with the
+        # session cookie, so demanding a flow key there would reject every
+        # profile — no profile on that path ever captures one.
+        needs_token = not USE_BATCH_RPC
+        extension_candidates = self._extension_candidates(require_token=needs_token)
+        if not extension_candidates and needs_token:
+            return {"error": "NO_FLOW_KEY"}
+        if not extension_candidates:
+            return {"error": "Extension not connected"}
 
-        try:
-            await self._extension_ws.send(json.dumps({
-                "id": req_id,
-                "method": method,
-                "params": params,
-            }))
-            result = await asyncio.wait_for(future, timeout=timeout)
-            return result
-        except asyncio.TimeoutError:
-            return {"error": f"Timeout ({timeout}s) waiting for {method}"}
-        except Exception as e:
-            return {"error": str(e)}
-        finally:
-            self._pending.pop(req_id, None)
+        last_result = {"error": "Extension not connected"}
+        for index, extension_ws in enumerate(extension_candidates):
+            if extension_ws not in self._extensions:
+                continue
+
+            self._extension_ws = extension_ws
+            self._flow_key = self._extensions[extension_ws].get("flow_key")
+            req_id = str(uuid.uuid4())
+            future = asyncio.get_running_loop().create_future()
+            self._pending[req_id] = future
+            self._pending_ws[req_id] = extension_ws
+
+            try:
+                await extension_ws.send(json.dumps({
+                    "id": req_id,
+                    "method": method,
+                    "params": params,
+                }))
+                last_result = await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError:
+                last_result = {"error": f"Timeout ({timeout}s) waiting for {method}"}
+            except Exception as e:
+                last_result = {"error": str(e)}
+            finally:
+                self._pending.pop(req_id, None)
+                self._pending_ws.pop(req_id, None)
+
+            has_alternative = index + 1 < len(extension_candidates)
+            if self._should_failover(last_result) and has_alternative:
+                if extension_ws in self._extensions:
+                    self._extensions[extension_ws]["unavailable_until"] = (
+                        time.time() + 60
+                    )
+                logger.warning(
+                    "Extension profile unavailable for %s; retrying through "
+                    "another authenticated profile",
+                    method,
+                )
+                continue
+
+            return last_result
+
+        return last_result
 
     def _build_url(self, endpoint_key: str, **kwargs) -> str:
         """Build full API URL."""

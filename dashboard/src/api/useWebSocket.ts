@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { WSEvent } from '../types'
 
-export function useWebSocket() {
+export function useWebSocket(onMessage?: (event: WSEvent) => void) {
   const [isConnected, setIsConnected] = useState(false)
   const [lastEvent, setLastEvent] = useState<WSEvent | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const retriesRef = useRef(0)
+  const onMessageRef = useRef(onMessage)
+  const connectRef = useRef<() => void>(() => {})
+
+  useEffect(() => { onMessageRef.current = onMessage }, [onMessage])
 
   const connect = useCallback(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -21,7 +25,10 @@ export function useWebSocket() {
       try {
         const event: WSEvent = JSON.parse(e.data)
         setLastEvent(event)
-      } catch {}
+        onMessageRef.current?.(event)
+      } catch {
+        // malformed frame — ignore
+      }
     }
 
     ws.onclose = () => {
@@ -29,11 +36,13 @@ export function useWebSocket() {
       wsRef.current = null
       const delay = Math.min(1000 * 2 ** retriesRef.current, 30000)
       retriesRef.current++
-      setTimeout(connect, delay)
+      setTimeout(() => connectRef.current(), delay)
     }
 
     ws.onerror = () => ws.close()
   }, [])
+
+  useEffect(() => { connectRef.current = connect }, [connect])
 
   useEffect(() => {
     connect()

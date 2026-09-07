@@ -25,7 +25,11 @@ def _write_models(data: dict):
 
 
 def _reload_config(data: dict):
-    """Hot-reload model keys into the running config module."""
+    """Hot-reload model keys into the running config module.
+
+    Omni Flash is resolved directly from models.json at submit time, so no
+    config-module mirror is required for that section.
+    """
     config.VIDEO_MODELS.clear()
     config.VIDEO_MODELS.update(data["video_models"])
     config.UPSCALE_MODELS.clear()
@@ -55,21 +59,38 @@ async def patch_models(body: dict):
         }
       }
     }
+
+    Omni Flash duration keys are configurable too:
+    {
+      "omni_flash_models": {
+        "reference_to_video": {"10": "abra_r2v_10s"}
+      }
+    }
     """
     current = _read_models()
 
     if "default_image_model" in body:
         current["default_image_model"] = body["default_image_model"]
 
-    # Deep merge: only update keys that are provided
-    for section in ("video_models", "image_models", "upscale_models"):
+    # Deep merge: only update keys that are provided.
+    for section in (
+        "video_models",
+        "omni_flash_models",
+        "image_models",
+        "upscale_models",
+    ):
         if section not in body:
             continue
-        if section == "upscale_models" or section == "image_models":
-            # Flat dict — direct merge
-            current[section].update(body[section])
+        if section in ("upscale_models", "image_models"):
+            # Flat dict — direct merge.
+            current.setdefault(section, {}).update(body[section])
+        elif section == "omni_flash_models":
+            # Nested by generation mode -> duration -> model key.
+            target = current.setdefault(section, {})
+            for mode, durations in body[section].items():
+                target.setdefault(mode, {}).update(durations)
         else:
-            # Nested dict — merge per tier, per gen_type
+            # Nested dict — merge per tier, per gen_type.
             for tier, gen_types in body[section].items():
                 if tier not in current[section]:
                     current[section][tier] = {}

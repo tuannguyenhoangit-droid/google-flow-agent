@@ -2,12 +2,12 @@
   "video_models": {
     "PAYGATE_TIER_TWO": {
       "frame_2_video": {
-        "VIDEO_ASPECT_RATIO_LANDSCAPE": "veo_3_1_i2v_s_fast_ultra_relaxed",
-        "VIDEO_ASPECT_RATIO_PORTRAIT": "veo_3_1_i2v_s_fast_ultra_relaxed"
+        "VIDEO_ASPECT_RATIO_LANDSCAPE": "veo_3_1_i2v_lite_low_priority",
+        "VIDEO_ASPECT_RATIO_PORTRAIT": "veo_3_1_i2v_lite_low_priority"
       },
       "start_end_frame_2_video": {
-        "VIDEO_ASPECT_RATIO_LANDSCAPE": "veo_3_1_i2v_s_fast_ultra_relaxed",
-        "VIDEO_ASPECT_RATIO_PORTRAIT": "veo_3_1_i2v_s_fast_ultra_relaxed"
+        "VIDEO_ASPECT_RATIO_LANDSCAPE": "veo_3_1_i2v_lite_low_priority",
+        "VIDEO_ASPECT_RATIO_PORTRAIT": "veo_3_1_i2v_lite_low_priority"
       },
       "reference_frame_2_video": {
         "VIDEO_ASPECT_RATIO_LANDSCAPE": "veo_3_1_r2v_fast_landscape_ultra_relaxed",
@@ -27,6 +27,26 @@
         "VIDEO_ASPECT_RATIO_LANDSCAPE": "veo_3_1_r2v_fast",
         "VIDEO_ASPECT_RATIO_PORTRAIT": "veo_3_1_r2v_fast_portrait"
       }
+    }
+  },
+  "omni_flash_models": {
+    "frame_to_video": {
+      "4": "abra_i2v_4s",
+      "6": "abra_i2v_6s",
+      "8": "abra_i2v_8s",
+      "10": "abra_i2v_10s"
+    },
+    "start_end_frame_to_video": {
+      "4": "abra_i2v_4s",
+      "6": "abra_i2v_6s",
+      "8": "abra_i2v_8s",
+      "10": "abra_i2v_10s"
+    },
+    "reference_to_video": {
+      "4": "abra_r2v_4s",
+      "6": "abra_r2v_6s",
+      "8": "abra_r2v_8s",
+      "10": "abra_r2v_10s"
     }
   },
   "upscale_models": {

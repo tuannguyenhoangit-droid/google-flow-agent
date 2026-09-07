@@ -1,9 +1,21 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { fetchAPI, patchAPI } from '../api/client'
-import type { Project, Character, Video, Scene, ChainType, StatusType } from '../types'
+import type { Project, Character, Video, Scene, Request } from '../types'
 import EditableText from '../components/projects/EditableText'
+import PipelineView from '../components/pipeline/PipelineView'
+import { count, charStatus, videoStageBreakdown, type SceneStage } from '../lib/stageStats'
+import { useTranslation } from '../i18n/useTranslation'
+import { statusLabel, stateLabel, projectStatusLabel, stageLowerLabel } from '../i18n/labels'
+import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/card'
+import { Badge } from '../components/ui/badge'
+import { Progress } from '../components/ui/progress'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from '../components/ui/table'
+import { Button } from '../components/ui/button'
 
-type Tab = 'Overview' | 'Characters' | 'Videos' | 'Scenes'
+type Tab = 'overview' | 'characters' | 'videos' | 'pipeline'
+const STAGE_KEYS: ('refs' | SceneStage)[] = ['refs', 'image', 'video', 'upscale']
 
 interface Props {
   projectId: string
@@ -14,358 +26,276 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleString()
 }
 
-function StatusDot({ status }: { status: StatusType }) {
-  const colors: Record<StatusType, string> = {
-    COMPLETED: 'var(--green)',
-    PROCESSING: 'var(--yellow)',
-    PENDING: 'var(--muted)',
-    FAILED: 'var(--red)',
-  }
-  return (
-    <span
-      className="inline-block w-2 h-2 rounded-full"
-      style={{ background: colors[status] ?? 'var(--muted)' }}
-      title={status}
-    />
-  )
+const STATUS_COLOR: Record<string, string> = {
+  COMPLETED: 'var(--green)',
+  PROCESSING: 'var(--yellow)',
+  FAILED: 'var(--red)',
+  PENDING: 'var(--muted)',
 }
 
-function Badge({ label, color }: { label: string; color?: string }) {
-  return (
-    <span
-      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold"
-      style={{ background: color ?? 'rgba(100,116,139,0.2)', color: 'var(--muted)' }}
-    >
-      {label}
-    </span>
-  )
-}
-
-function ChainBadge({ type }: { type: ChainType }) {
-  const styles: Record<ChainType, { bg: string; color: string }> = {
-    ROOT: { bg: 'rgba(59,130,246,0.2)', color: 'var(--accent)' },
-    CONTINUATION: { bg: 'rgba(34,197,94,0.2)', color: 'var(--green)' },
-    INSERT: { bg: 'rgba(245,158,11,0.2)', color: 'var(--yellow)' },
-  }
-  const s = styles[type] ?? styles.ROOT
-  return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold" style={{ background: s.bg, color: s.color }}>
-      {type}
-    </span>
-  )
-}
-
-// ---- Overview Tab ----
-function OverviewTab({ project, onRefresh }: { project: Project; onRefresh: () => void }) {
-  async function patchProject(field: string, value: string) {
-    await patchAPI(`/api/projects/${project.id}`, { [field]: value })
-    onRefresh()
-  }
-
-  return (
-    <div className="flex flex-col gap-4 max-w-2xl">
-      <div className="rounded-lg p-4 flex flex-col gap-3" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
-        <div>
-          <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>NAME</div>
-          <EditableText value={project.name} onSave={v => patchProject('name', v)} className="font-bold text-sm" />
-        </div>
-        <div>
-          <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>DESCRIPTION</div>
-          <EditableText value={project.description ?? ''} onSave={v => patchProject('description', v)} multiline className="text-xs" />
-        </div>
-        <div>
-          <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>STORY</div>
-          <EditableText value={project.story ?? ''} onSave={v => patchProject('story', v)} multiline className="text-xs" />
-        </div>
-      </div>
-
-      <div className="rounded-lg p-4 flex flex-col gap-2" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
-        <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>META</div>
-        <div className="flex flex-wrap gap-2 text-xs" style={{ color: 'var(--text)' }}>
-          <Badge label={project.material} />
-          {project.user_paygate_tier && (
-            <Badge
-              label={project.user_paygate_tier.includes('TWO') ? 'TIER 2' : 'TIER 1'}
-              color={project.user_paygate_tier.includes('TWO') ? 'rgba(245,158,11,0.2)' : 'rgba(59,130,246,0.2)'}
-            />
-          )}
-          <Badge label={project.status} />
-        </div>
-        <div className="flex flex-col gap-1 mt-2 text-xs" style={{ color: 'var(--muted)' }}>
-          <div>Created: {formatDate(project.created_at)}</div>
-          <div>Updated: {formatDate(project.updated_at)}</div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ---- Characters Tab ----
-function CharactersTab({ characters, onRefresh }: { characters: Character[]; onRefresh: () => void }) {
-  async function patchChar(cid: string, field: string, value: string) {
-    await patchAPI(`/api/characters/${cid}`, { [field]: value })
-    onRefresh()
-  }
-
-  if (characters.length === 0) {
-    return <div className="text-xs" style={{ color: 'var(--muted)' }}>No entities linked to this project.</div>
-  }
-
-  return (
-    <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
-      {characters.map(ch => (
-        <div key={ch.id} className="rounded-lg p-3 flex flex-col gap-2" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
-          {/* Reference image */}
-          <div
-            className="rounded overflow-hidden flex items-center justify-center"
-            style={{ width: '100%', aspectRatio: '1/1', background: 'var(--surface)', border: '1px solid var(--border)' }}
-          >
-            {ch.reference_image_url ? (
-              <img src={ch.reference_image_url} alt={ch.name} className="w-full h-full object-cover" />
-            ) : (
-              <span className="text-xs" style={{ color: 'var(--muted)' }}>{ch.entity_type}</span>
-            )}
-          </div>
-
-          {/* Name */}
-          <div className="font-bold text-xs" style={{ color: 'var(--text)' }}>{ch.name}</div>
-
-          {/* Entity type badge */}
-          <Badge label={ch.entity_type} />
-
-          {/* Description */}
-          <div className="text-xs" style={{ color: 'var(--muted)' }}>
-            <EditableText
-              value={ch.description ?? ''}
-              onSave={v => patchChar(ch.id, 'description', v)}
-              multiline
-              className="text-xs"
-            />
-          </div>
-
-          {/* media_id indicator */}
-          <div className="flex items-center gap-1.5 text-xs">
-            <span
-              className="inline-block w-2 h-2 rounded-full"
-              style={{ background: ch.media_id ? 'var(--green)' : 'var(--red)' }}
-            />
-            <span style={{ color: ch.media_id ? 'var(--green)' : 'var(--red)' }}>
-              {ch.media_id ? 'Ready' : 'Missing'}
-            </span>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ---- Videos Tab ----
-function VideosTab({ videos }: { videos: Video[] }) {
-  if (videos.length === 0) {
-    return <div className="text-xs" style={{ color: 'var(--muted)' }}>No videos in this project.</div>
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      {videos.map(v => (
-        <div key={v.id} className="rounded-lg p-4 flex items-center gap-3" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
-          <div className="flex flex-col gap-1 flex-1">
-            <div className="font-bold text-sm" style={{ color: 'var(--text)' }}>{v.title}</div>
-            {v.description && <div className="text-xs" style={{ color: 'var(--muted)' }}>{v.description}</div>}
-          </div>
-          <Badge label={v.status} />
-          <div className="text-xs" style={{ color: 'var(--muted)' }}>Order {v.display_order}</div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ---- Scenes Tab ----
-function ScenesTab({ videos }: { videos: Video[] }) {
-  const [selectedVideoId, setSelectedVideoId] = useState(videos[0]?.id ?? '')
-  const [scenes, setScenes] = useState<Scene[]>([])
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    if (!selectedVideoId) return
-    setLoading(true)
-    fetchAPI<Scene[]>(`/api/scenes?video_id=${selectedVideoId}`)
-      .then(setScenes)
-      .catch(console.error)
-      .finally(() => setLoading(false))
-  }, [selectedVideoId])
-
-  async function patchScene(sid: string, field: string, value: string) {
-    await patchAPI(`/api/scenes/${sid}`, { [field]: value })
-    // refresh
-    setLoading(true)
-    fetchAPI<Scene[]>(`/api/scenes?video_id=${selectedVideoId}`)
-      .then(setScenes)
-      .catch(console.error)
-      .finally(() => setLoading(false))
-  }
-
-  function parseCharNames(raw: string | null): string[] {
-    if (!raw) return []
-    try { return JSON.parse(raw) } catch { return [] }
-  }
-
-  if (videos.length === 0) {
-    return <div className="text-xs" style={{ color: 'var(--muted)' }}>No videos yet.</div>
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      {/* Video selector */}
-      <select
-        value={selectedVideoId}
-        onChange={e => setSelectedVideoId(e.target.value)}
-        className="text-xs px-2 py-1.5 rounded outline-none w-64"
-        style={{ background: 'var(--card)', color: 'var(--text)', border: '1px solid var(--border)' }}
-      >
-        {videos.map(v => (
-          <option key={v.id} value={v.id}>{v.title}</option>
-        ))}
-      </select>
-
-      {loading ? (
-        <div className="text-xs" style={{ color: 'var(--muted)' }}>Loading scenes...</div>
-      ) : scenes.length === 0 ? (
-        <div className="text-xs" style={{ color: 'var(--muted)' }}>No scenes in this video.</div>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {scenes.map(scene => {
-            const charNames = parseCharNames(scene.character_names)
-            return (
-              <div key={scene.id} className="rounded-lg p-4 flex flex-col gap-2" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold" style={{ color: 'var(--muted)' }}>#{scene.display_order + 1}</span>
-                  <ChainBadge type={scene.chain_type} />
-                  {/* Status badges */}
-                  <div className="flex items-center gap-2 ml-auto">
-                    <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--muted)' }}>
-                      <StatusDot status={scene.vertical_image_status} /> img
-                    </span>
-                    <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--muted)' }}>
-                      <StatusDot status={scene.vertical_video_status} /> vid
-                    </span>
-                    <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--muted)' }}>
-                      <StatusDot status={scene.vertical_upscale_status} /> upscale
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>PROMPT</div>
-                  <EditableText
-                    value={scene.prompt ?? ''}
-                    onSave={v => patchScene(scene.id, 'prompt', v)}
-                    className="text-xs"
-                  />
-                </div>
-
-                <div>
-                  <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>VIDEO PROMPT</div>
-                  <EditableText
-                    value={scene.video_prompt ?? ''}
-                    onSave={v => patchScene(scene.id, 'video_prompt', v)}
-                    multiline
-                    className="text-xs"
-                  />
-                </div>
-
-                {charNames.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {charNames.map(name => (
-                      <span key={name} className="text-xs px-2 py-0.5 rounded" style={{ background: 'var(--surface)', color: 'var(--accent)' }}>
-                        {name}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ---- Main ProjectDetailPage ----
 export default function ProjectDetailPage({ projectId, onBack }: Props) {
+  const { t } = useTranslation()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = (searchParams.get('tab') as Tab) ?? 'overview'
+
   const [project, setProject] = useState<Project | null>(null)
   const [characters, setCharacters] = useState<Character[]>([])
   const [videos, setVideos] = useState<Video[]>([])
-  const [tab, setTab] = useState<Tab>('Overview')
+  const [scenesByVideo, setScenesByVideo] = useState<Record<string, Scene[]>>({})
+  const [requests, setRequests] = useState<Request[]>([])
   const [loading, setLoading] = useState(true)
+  const [pipelineVideoId, setPipelineVideoId] = useState<string>('')
 
-  function fetchAll() {
+  const fetchAll = useCallback(async () => {
     setLoading(true)
-    Promise.all([
+    const [proj, chars, vids] = await Promise.all([
       fetchAPI<Project>(`/api/projects/${projectId}`),
       fetchAPI<Character[]>(`/api/projects/${projectId}/characters`),
       fetchAPI<Video[]>(`/api/videos?project_id=${projectId}`),
     ])
-      .then(([proj, chars, vids]) => {
-        setProject(proj)
-        setCharacters(chars)
-        setVideos(vids)
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false))
+    const sceneLists = await Promise.all(vids.map(v => fetchAPI<Scene[]>(`/api/scenes?video_id=${v.id}`)))
+    const sbv: Record<string, Scene[]> = {}
+    vids.forEach((v, i) => { sbv[v.id] = sceneLists[i] })
+    const reqs = await fetchAPI<Request[]>(`/api/requests?project_id=${projectId}`)
+
+    setProject(proj)
+    setCharacters(chars)
+    setVideos(vids)
+    setScenesByVideo(sbv)
+    setRequests(reqs)
+    setPipelineVideoId(prev => prev && vids.some(v => v.id === prev) ? prev : (vids[0]?.id ?? ''))
+    setLoading(false)
+  }, [projectId])
+
+  useEffect(() => { Promise.resolve().then(fetchAll) }, [fetchAll])
+
+  function setTab(t: Tab) {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set('tab', t)
+      return next
+    })
   }
 
-  useEffect(() => { fetchAll() }, [projectId])
+  async function patchProject(field: string, value: string) {
+    await patchAPI(`/api/projects/${projectId}`, { [field]: value })
+    fetchAll()
+  }
+
+  async function patchChar(cid: string, field: string, value: string) {
+    await patchAPI(`/api/characters/${cid}`, { [field]: value })
+    fetchAll()
+  }
 
   if (loading || !project) {
-    return <div className="text-xs" style={{ color: 'var(--muted)' }}>Loading project...</div>
+    return <div className="text-xs" style={{ color: 'var(--muted)' }}>{t('projectDetail.loading')}</div>
   }
 
-  const tabs: Tab[] = ['Overview', 'Characters', 'Videos', 'Scenes']
+  const allScenes = videos.flatMap(v => scenesByVideo[v.id] ?? [])
+  const stageRollup: Record<'refs' | SceneStage, ReturnType<typeof count>> = {
+    refs: count(characters.map(c => charStatus(c, requests))),
+    ...videoStageBreakdown(allScenes),
+  }
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Back + title */}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={onBack}
-          className="text-xs px-3 py-1.5 rounded"
-          style={{ background: 'var(--card)', color: 'var(--muted)', border: '1px solid var(--border)' }}
-        >
-          Back
-        </button>
-        <h1 className="font-bold text-sm" style={{ color: 'var(--text)' }}>{project.name}</h1>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-baseline gap-3">
+            <h1 className="m-0 text-lg font-semibold" style={{ color: 'var(--text)' }}>{project.name}</h1>
+            <Badge variant="outline">{project.material}</Badge>
+            <Badge variant="outline">{projectStatusLabel(t, project.status)}</Badge>
+          </div>
+          <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
+            {t('projectDetail.header', { id: project.id, date: formatDate(project.created_at), videos: videos.length, scenes: allScenes.length })}
+          </span>
+        </div>
+        <Button variant="ghost" size="sm" onClick={onBack}>{t('projectDetail.back')}</Button>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1" style={{ borderBottom: '1px solid var(--border)', paddingBottom: 4 }}>
-        {tabs.map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className="px-3 py-1.5 rounded-t text-xs font-semibold transition-colors"
-            style={{
-              background: tab === t ? 'var(--card)' : 'transparent',
-              color: tab === t ? 'var(--accent)' : 'var(--muted)',
-              borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
-            }}
-          >
-            {t}
-            {t === 'Characters' && ` (${characters.length})`}
-            {t === 'Videos' && ` (${videos.length})`}
-          </button>
-        ))}
-      </div>
+      <Tabs value={tab} onValueChange={v => setTab(v as Tab)}>
+        <TabsList>
+          <TabsTrigger value="overview">{t('projectDetail.tab.overview')}</TabsTrigger>
+          <TabsTrigger value="characters">{t('projectDetail.tab.characters', { n: characters.length })}</TabsTrigger>
+          <TabsTrigger value="videos">{t('projectDetail.tab.videos', { n: videos.length })}</TabsTrigger>
+          <TabsTrigger value="pipeline">{t('projectDetail.tab.pipeline')}</TabsTrigger>
+        </TabsList>
 
-      {/* Tab content */}
-      <div>
-        {tab === 'Overview' && <OverviewTab project={project} onRefresh={fetchAll} />}
-        {tab === 'Characters' && <CharactersTab characters={characters} onRefresh={fetchAll} />}
-        {tab === 'Videos' && <VideosTab videos={videos} />}
-        {tab === 'Scenes' && <ScenesTab videos={videos} />}
-      </div>
+        <TabsContent value="overview" className="pt-4">
+          <div className="grid gap-4" style={{ gridTemplateColumns: '1.4fr 1fr' }}>
+            <Card className="py-4">
+              <CardHeader>
+                <CardTitle className="text-xs tracking-widest uppercase">{t('projectDetail.card.projectFields')}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col gap-3.5">
+                  {[
+                    { label: t('projectDetail.field.name'), value: project.name, field: 'name', multiline: false },
+                    { label: t('projectDetail.field.description'), value: project.description ?? '', field: 'description', multiline: true },
+                    { label: t('projectDetail.field.story'), value: project.story ?? '', field: 'story', multiline: true },
+                  ].map(f => (
+                    <div key={f.field} className="flex flex-col gap-1">
+                      <span className="text-[9px] tracking-widest" style={{ color: 'var(--muted)' }}>{f.label}</span>
+                      <div className="rounded-md px-2.5 py-2 text-xs" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                        <EditableText value={f.value} onSave={v => patchProject(f.field, v)} multiline={f.multiline} className="text-xs" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="flex flex-col gap-4">
+              <Card className="py-4">
+                <CardHeader>
+                  <CardTitle className="text-xs tracking-widest uppercase">{t('projectDetail.card.narrator')}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-col gap-1.5 text-[11px]">
+                    <div className="flex justify-between"><span style={{ color: 'var(--muted)' }}>{t('projectDetail.narrator.enabled')}</span><span>{project.narrator_voice ? t('projectDetail.true') : t('projectDetail.false')}</span></div>
+                    <div className="flex justify-between"><span style={{ color: 'var(--muted)' }}>{t('projectDetail.narrator.voice')}</span><span>{project.narrator_voice ?? t('projectDetail.noNarration')}</span></div>
+                    <div className="flex justify-between"><span style={{ color: 'var(--muted)' }}>{t('projectDetail.narrator.refAudio')}</span><span>{project.narrator_ref_audio ?? t('common.dash')}</span></div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="py-4">
+                <CardHeader>
+                  <CardTitle className="text-xs tracking-widest uppercase">{t('projectDetail.card.stageRollup')}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-col gap-2.5">
+                    {STAGE_KEYS.map(key => {
+                      const c = stageRollup[key]
+                      const pct = c.total > 0 ? Math.round((c.done / c.total) * 100) : 0
+                      return (
+                        <div key={key} className="grid items-center gap-2.5" style={{ gridTemplateColumns: '60px 1fr 50px' }}>
+                          <span className="text-[10px] tracking-wide uppercase" style={{ color: 'var(--text)' }}>{stageLowerLabel(t, key)}</span>
+                          <Progress value={pct} className="h-1" />
+                          <span className="text-[10px] text-right" style={{ color: 'var(--muted)' }}>{c.done}/{c.total}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="characters" className="pt-4">
+          {characters.length === 0 ? (
+            <div className="text-xs" style={{ color: 'var(--muted)' }}>{t('projectDetail.noCharacters')}</div>
+          ) : (
+            <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
+              {characters.map(ch => {
+                const st = charStatus(ch, requests)
+                return (
+                  <Card key={ch.id} className="py-0 gap-0 overflow-hidden h-full">
+                    <div className="relative flex items-center justify-center" style={{ aspectRatio: '1/1', background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
+                      {ch.reference_image_url ? (
+                        <img src={ch.reference_image_url} alt={ch.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-[10px] tracking-wide" style={{ color: 'var(--muted)' }}>{st === 'PROCESSING' ? t('projectDetail.character.generating') : t('projectDetail.character.noReference')}</span>
+                      )}
+                      <span className="absolute top-2 left-2 flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[9px] tracking-wide" style={{ background: 'rgba(10,10,20,0.8)', color: STATUS_COLOR[st] }}>
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: STATUS_COLOR[st] }} />{statusLabel(t, st)}
+                      </span>
+                    </div>
+                    <div className="p-3 flex flex-col gap-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold">{ch.name}</span>
+                        <Badge variant="outline">{ch.entity_type}</Badge>
+                      </div>
+                      <div className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                        <EditableText value={ch.description ?? ''} onSave={v => patchChar(ch.id, 'description', v)} multiline className="text-[11px]" />
+                      </div>
+                      <span className="text-[9px] tracking-wide" style={{ color: 'var(--muted)' }}>{t('projectDetail.character.updated', { date: formatDate(ch.updated_at) })}</span>
+                    </div>
+                  </Card>
+                )
+              })}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="videos" className="pt-4">
+          {videos.length === 0 ? (
+            <div className="text-xs" style={{ color: 'var(--muted)' }}>{t('projectDetail.noVideos')}</div>
+          ) : (
+            <Card className="py-4">
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>{t('projectDetail.table.video')}</TableHead>
+                      <TableHead>{t('projectDetail.table.scenes')}</TableHead>
+                      <TableHead>{t('projectDetail.table.progress')}</TableHead>
+                      <TableHead>{t('projectDetail.table.state')}</TableHead>
+                      <TableHead></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {videos.map(v => {
+                      const scenes = scenesByVideo[v.id] ?? []
+                      const breakdown = videoStageBreakdown(scenes)
+                      const stages: SceneStage[] = ['image', 'video', 'upscale']
+                      const totalSlots = scenes.length * stages.length
+                      const doneSlots = stages.reduce((sum, s) => sum + breakdown[s].done, 0)
+                      const pct = totalSlots > 0 ? Math.round((doneSlots / totalSlots) * 100) : 0
+                      const anyProcessing = requests.some(r => r.video_id === v.id && r.status === 'PROCESSING')
+                      const state: 'COMPLETED' | 'RUNNING' | 'QUEUED' = pct === 100 && scenes.length > 0 ? 'COMPLETED' : anyProcessing ? 'RUNNING' : 'QUEUED'
+                      return (
+                        <TableRow key={v.id}>
+                          <TableCell>
+                            <div className="text-xs">{v.title}</div>
+                            <div className="text-[9px]" style={{ color: 'var(--muted)' }}>{v.id.slice(0, 8)}</div>
+                          </TableCell>
+                          <TableCell className="text-xs" style={{ color: 'var(--muted)' }}>{scenes.length}</TableCell>
+                          <TableCell>
+                            <div className="flex flex-col gap-1" style={{ width: 120 }}>
+                              <span className="text-[10px]" style={{ color: 'var(--muted)' }}>{pct}%</span>
+                              <Progress value={pct} className="h-1" />
+                            </div>
+                          </TableCell>
+                          <TableCell><Badge variant={state === 'COMPLETED' ? 'secondary' : state === 'RUNNING' ? 'default' : 'outline'}>{stateLabel(t, state)}</Badge></TableCell>
+                          <TableCell>
+                            <span
+                              className="text-[10px] cursor-pointer"
+                              style={{ color: 'var(--accent)' }}
+                              onClick={() => { setPipelineVideoId(v.id); setTab('pipeline') }}
+                            >
+                              {t('projectDetail.pipelineLink')}
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+
+        <TabsContent value="pipeline" className="pt-4">
+          {videos.length === 0 ? (
+            <div className="text-xs" style={{ color: 'var(--muted)' }}>{t('projectDetail.pipeline.noVideos')}</div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] tracking-widest" style={{ color: 'var(--muted)' }}>{t('projectDetail.pipeline.videoLabel')}</span>
+                {videos.map(v => (
+                  <Button key={v.id} variant={v.id === pipelineVideoId ? 'default' : 'outline'} size="sm" onClick={() => setPipelineVideoId(v.id)}>
+                    {v.title}
+                  </Button>
+                ))}
+              </div>
+              {pipelineVideoId && <PipelineView projectId={projectId} videoId={pipelineVideoId} />}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

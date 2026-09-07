@@ -46,11 +46,11 @@ python setup.py clean     # Remove generated configs
 
 | Tool | Generated Config | Instruction File | Invocation |
 |------|-----------------|------------------|------------|
-| Claude Code | `.claude/commands/fk:<name>.md` (stubs) | `CLAUDE.md` (committed) | `/fk:<name>` |
-| Gemini CLI | `.gemini/commands/fk/<name>.toml` | `GEMINI.md` (generated) | `/fk:<name>` |
-| Codex CLI | — | `AGENTS.md` (generated) | Read `skills/fk:<name>.md` |
+| Claude Code | `.claude/commands/fk-<name>.md` (stubs) | `CLAUDE.md` (committed) | `/fk-<name>` |
+| Gemini CLI | `.gemini/commands/fk/<name>.toml` | `GEMINI.md` (generated) | `/fk-<name>` |
+| Codex CLI | — | `AGENTS.md` (generated) | Read `skills/fk-<name>.md` |
 
-**Adding a new skill:** Create `skills/fk:<name>.md`, then run `python setup.py sync`.
+**Adding a new skill:** Create `skills/fk-<name>.md`, then run `python setup.py sync`.
 
 ---
 

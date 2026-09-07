@@ -72,9 +72,10 @@ If no specific model key was provided as argument, present an `AskUserQuestion` 
 
 **For video model:**
 Use `AskUserQuestion` with options:
-- label: "VEO 3.1 Ultra (Recommended)", description: "Default high quality · fast queue · current default"
-- label: "VEO 3.1 Lite", description: "Lower quality · fastest · no r2v support"
-- label: "VEO 3.1 Low Priority", description: "Same ultra quality · slower queue · saves credits"
+- label: "VEO 3.1 Lite Low Priority (Recommended for free runs)", description: "0 credits · slower queue · works on every tier including SERVICE_TIER_ADVANCED"
+- label: "VEO 3.1 Lite", description: "Lower quality · fastest · ~5 credits/video · no r2v support"
+- label: "VEO 3.1 Fast Ultra", description: "High quality · fast queue · ~10 credits/video"
+- label: "VEO 3.1 Low Priority leaving", description: "Same ultra quality · slower queue · 0 credits but requires SERVICE_TIER_ULTRA (silent fail on ADVANCED)"
 
 After user picks, apply the matching preset from the Quick Switch Presets section below.
 
@@ -163,23 +164,24 @@ These are model keys observed on Google Flow (may change as Google updates):
 ### Video (Veo family)
 | Key | Description |
 |-----|-------------|
-| Key | Description | Quality | Speed |
-|-----|-------------|---------|-------|
-| `veo_3_1_i2v_lite` | **VEO 3.1 Lite** — lightweight, fast | Lower | Fastest |
-| `veo_3_1_i2v_s_fast` | Veo 3.1 i2v, TIER_ONE | Standard | Fast |
-| `veo_3_1_i2v_s_fast_portrait` | Veo 3.1 i2v portrait, TIER_ONE | Standard | Fast |
-| `veo_3_1_i2v_s_fast_ultra` | Veo 3.1 i2v, TIER_TWO (ultra) | High | Fast |
-| `veo_3_1_i2v_s_fast_portrait_ultra` | Veo 3.1 i2v portrait, TIER_TWO | High | Fast |
-| `veo_3_1_i2v_s_fast_ultra_relaxed` | **VEO 3.1 Low Priority** — same ultra quality, slower queue | High | Slow |
-| `veo_3_1_i2v_s_fast_fl` | Veo 3.1 i2v first+last frame, TIER_ONE | Standard | Fast |
-| `veo_3_1_i2v_s_fast_portrait_fl` | Veo 3.1 i2v portrait first+last, TIER_ONE | Standard | Fast |
-| `veo_3_1_i2v_s_fast_ultra_fl` | Veo 3.1 i2v first+last, TIER_TWO | High | Fast |
-| `veo_3_1_i2v_s_fast_portrait_ultra_fl` | Veo 3.1 i2v portrait first+last, TIER_TWO | High | Fast |
-| `veo_3_0_r2v_fast_ultra` | Veo 3.0 reference-to-video, TIER_TWO | High | Fast |
-| `veo_3_0_r2v_fast_portrait_ultra` | Veo 3.0 r2v portrait, TIER_TWO | High | Fast |
-| `veo_3_1_r2v_fast_landscape_ultra_relaxed` | **VEO 3.1 r2v Low Priority** — slower queue | High | Slow |
-| `veo_3_1_r2v_fast` | Veo 3.1 r2v, TIER_ONE | Standard | Fast |
-| `veo_3_1_r2v_fast_portrait` | Veo 3.1 r2v portrait, TIER_ONE | Standard | Fast |
+| Key | Description | Quality | Speed | Cost | Tier req. |
+|-----|-------------|---------|-------|------|-----------|
+| `veo_3_1_i2v_lite` | **VEO 3.1 Lite** — lightweight, fast | Lower | Fastest | ~5 credits | any |
+| `veo_3_1_i2v_lite_low_priority` | **VEO 3.1 Lite Low Priority** — TRUE 0-credit, no headroom required | Lower | Slow | 0 | any (incl. ADVANCED) |
+| `veo_3_1_i2v_s_fast` | Veo 3.1 i2v, TIER_ONE | Standard | Fast | paid | TIER_ONE |
+| `veo_3_1_i2v_s_fast_portrait` | Veo 3.1 i2v portrait, TIER_ONE | Standard | Fast | paid | TIER_ONE |
+| `veo_3_1_i2v_s_fast_ultra` | Veo 3.1 i2v, TIER_TWO (ultra) | High | Fast | ~10 credits | TIER_TWO |
+| `veo_3_1_i2v_s_fast_portrait_ultra` | Veo 3.1 i2v portrait, TIER_TWO | High | Fast | ~10 credits | TIER_TWO |
+| `veo_3_1_i2v_s_fast_ultra_relaxed` | **VEO 3.1 Low Priority "leaving"** — same ultra quality, slower queue, 0 credits but needs SERVICE_TIER_ULTRA | High | Slow | 0 | SERVICE_TIER_ULTRA |
+| `veo_3_1_i2v_s_fast_fl` | Veo 3.1 i2v first+last frame, TIER_ONE | Standard | Fast | paid | TIER_ONE |
+| `veo_3_1_i2v_s_fast_portrait_fl` | Veo 3.1 i2v portrait first+last, TIER_ONE | Standard | Fast | paid | TIER_ONE |
+| `veo_3_1_i2v_s_fast_ultra_fl` | Veo 3.1 i2v first+last, TIER_TWO | High | Fast | paid | TIER_TWO |
+| `veo_3_1_i2v_s_fast_portrait_ultra_fl` | Veo 3.1 i2v portrait first+last, TIER_TWO | High | Fast | paid | TIER_TWO |
+| `veo_3_0_r2v_fast_ultra` | Veo 3.0 reference-to-video, TIER_TWO | High | Fast | paid | TIER_TWO |
+| `veo_3_0_r2v_fast_portrait_ultra` | Veo 3.0 r2v portrait, TIER_TWO | High | Fast | paid | TIER_TWO |
+| `veo_3_1_r2v_fast_landscape_ultra_relaxed` | **VEO 3.1 r2v Low Priority** — slower queue, requires SERVICE_TIER_ULTRA | High | Slow | 0 | SERVICE_TIER_ULTRA |
+| `veo_3_1_r2v_fast` | Veo 3.1 r2v, TIER_ONE | Standard | Fast | paid | TIER_ONE |
+| `veo_3_1_r2v_fast_portrait` | Veo 3.1 r2v portrait, TIER_ONE | Standard | Fast | paid | TIER_ONE |
 
 ### Model Compatibility
 
@@ -192,25 +194,37 @@ These are model keys observed on Google Flow (may change as Google updates):
 
 ### Quick Switch Presets
 
-**Switch to VEO 3.1 Lite (fast, no r2v):**
+> **TIER COMPATIBILITY NOTE**
+> - `veo_3_1_i2v_s_fast_ultra_relaxed` and `veo_3_1_r2v_fast_*_ultra_relaxed` need `serviceTier=SERVICE_TIER_ULTRA`. Accounts on `SERVICE_TIER_ADVANCED` get an empty-operations 200 response and the request silently dies.
+> - `veo_3_1_i2v_lite_low_priority` is the **TRUE 0-credit** Low Priority model: works on `SERVICE_TIER_ADVANCED` and does not need spare credits. Use this when the LEAVING-style model fails.
+> - `veo_3_1_i2v_lite` is paid (~5 credits per 8s clip) but reliably available on every tier; use as a compatibility fallback.
+
+**Switch to VEO 3.1 Lite Low Priority (TRUE 0-credit, works on ADVANCED tier — Recommended for Low Priority):**
 ```bash
 curl -s -X PATCH http://127.0.0.1:8100/api/models \
   -H "Content-Type: application/json" \
-  -d '{"video_models":{"PAYGATE_TIER_TWO":{"frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_lite","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_lite"}}}}'
+  -d '{"video_models":{"PAYGATE_TIER_TWO":{"frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_lite_low_priority","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_lite_low_priority"},"start_end_frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_lite_low_priority","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_lite_low_priority"}}}}'
 ```
 
-**Switch to VEO 3.1 Low Priority (ultra quality, slower queue):**
+**Switch to VEO 3.1 Lite (fast, ~5 credits per video, no r2v):**
 ```bash
 curl -s -X PATCH http://127.0.0.1:8100/api/models \
   -H "Content-Type: application/json" \
-  -d '{"video_models":{"PAYGATE_TIER_TWO":{"frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_s_fast_ultra_relaxed","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_s_fast_ultra_relaxed"},"reference_frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_r2v_fast_landscape_ultra_relaxed","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_r2v_fast_landscape_ultra_relaxed"}}}}'
+  -d '{"video_models":{"PAYGATE_TIER_TWO":{"frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_lite","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_lite"},"start_end_frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_lite","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_lite"}}}}'
 ```
 
-**Switch back to default VEO 3.1 Ultra:**
+**Switch to VEO 3.1 Low Priority "leaving" (0 credits, requires SERVICE_TIER_ULTRA — fails silently on ADVANCED):**
 ```bash
 curl -s -X PATCH http://127.0.0.1:8100/api/models \
   -H "Content-Type: application/json" \
-  -d '{"video_models":{"PAYGATE_TIER_TWO":{"frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_s_fast_ultra","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_s_fast_portrait_ultra"},"reference_frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_0_r2v_fast_ultra","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_0_r2v_fast_portrait_ultra"}}}}'
+  -d '{"video_models":{"PAYGATE_TIER_TWO":{"frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_s_fast_ultra_relaxed","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_s_fast_ultra_relaxed"},"start_end_frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_s_fast_ultra_relaxed","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_s_fast_ultra_relaxed"},"reference_frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_r2v_fast_landscape_ultra_relaxed","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_r2v_fast_landscape_ultra_relaxed"}}}}'
+```
+
+**Switch to VEO 3.1 Fast Ultra (~10 credits per video, full quality, requires credits):**
+```bash
+curl -s -X PATCH http://127.0.0.1:8100/api/models \
+  -H "Content-Type: application/json" \
+  -d '{"video_models":{"PAYGATE_TIER_TWO":{"frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_s_fast_ultra","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_s_fast_portrait_ultra"},"start_end_frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_1_i2v_s_fast_ultra_fl","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_1_i2v_s_fast_portrait_ultra_fl"},"reference_frame_2_video":{"VIDEO_ASPECT_RATIO_LANDSCAPE":"veo_3_0_r2v_fast_ultra","VIDEO_ASPECT_RATIO_PORTRAIT":"veo_3_0_r2v_fast_portrait_ultra"}}}}'
 ```
 
 ### Image

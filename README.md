@@ -146,6 +146,26 @@ Each project goes through: **story → entities → reference images → scene i
 
 <sub>The Chrome extension runs alongside Google Flow — showing real-time request log (614 total, 328 success), video generation progress, and token status. The Python agent communicates with the extension via WebSocket to automate all API calls.</sub>
 
+---
+
+### Web Dashboard — Ops Console
+
+A local React dashboard (`dashboard/`) for monitoring and driving the pipeline — real-time KPIs, per-video stage progress, a scene-level pipeline view with AI review, and a setup guide, all backed by the same FastAPI agent. Supports English, Vietnamese, Hindi, Indonesian, Chinese, Korean, and Japanese.
+
+<p align="center">
+  <img src="docs/images/dashboard_overview.png" width="800" alt="Dashboard home screen with KPI cards, pipeline throughput table, needs-attention panel, and live event stream" />
+</p>
+
+<p align="center">
+  <img src="docs/images/dashboard_pipeline.png" width="380" alt="Scene pipeline view with stage rail (Refs/Images/Videos/Upscale) and per-scene status cards" />
+  <img src="docs/images/dashboard_project_detail.png" width="380" alt="Project detail overview tab with editable fields, narrator settings, and stage rollup" />
+</p>
+
+<p align="center">
+  <img src="docs/images/dashboard_guide.png" width="380" alt="Built-in setup guide with live extension connection status" />
+  <img src="docs/images/dashboard_i18n.png" width="380" alt="Dashboard rendered in Japanese, demonstrating the built-in multi-language support" />
+</p>
+
 ## Architecture
 
 ```
@@ -234,6 +254,7 @@ Three capabilities have no captured payload, so they fail with
 | 4K/1080p upscale (`/fk-pipeline` last step) | unported | none — keep the 1080p render |
 | Reference-to-video (r2v) | unported | `FLOW_ALLOW_DEGRADED=1` → i2v off the first reference |
 | Start+end-frame chaining (`/fk-gen-chain-videos`) | unported | `FLOW_ALLOW_DEGRADED=1` → i2v off the start frame |
+| Omni Flash (`model_family=omni_flash`) | unported | use `model_family=veo` |
 
 Restoring one starts with a capture, not a guess: [`docs/CAPTURE.md`](docs/CAPTURE.md).
 
@@ -460,10 +481,13 @@ Ready-to-use workflow recipes in `skills/` (also available as `/slash-commands` 
 | Skill | Description |
 |-------|-------------|
 | `/fk-create-project` | Create project + entities + video + scenes interactively |
+| `/fk-research` | Fact-check story details before scripting |
 | `/fk-gen-refs` | Generate reference images for all entities |
 | `/fk-gen-images` | Generate scene images with character refs |
-| `/fk-gen-videos` | Generate videos from scene images |
+| `/fk-gen-videos` | Generate videos from scene images (4K upscale via `UPSCALE_VIDEO` request, `PAYGATE_TIER_TWO`) |
 | `/fk-concat` | Download + merge all scene videos |
+| `/fk-pipeline` | Smart full-pipeline orchestrator — runs the whole chain end to end |
+| `/fk-monitor` | Live monitor for a running pipeline |
 
 ### Advanced Video
 
@@ -473,20 +497,31 @@ Ready-to-use workflow recipes in `skills/` (also available as `/slash-commands` 
 | `/fk-insert-scene` | Multi-angle shots, cutaways, close-ups within a chain |
 | `/fk-creative-mix` | Analyze story + suggest all techniques (chain, insert, r2v, parallel) |
 
+### Review & Quality
+
+| Skill | Description |
+|-------|-------------|
+| `/fk-review-video` | AI vision scoring of generated scene videos (quality, consistency, usability) — see [AI Vision Providers](#ai-vision-providers-video-review) below |
+| `/fk-review-board` | Visual scene-by-scene review board for feedback before locking a cut |
+| `/fk-change-provider` | View/switch which AI CLI (claude/agy/codex) powers `/fk-review-video` |
+
 ### Reference
 
 | Skill | Description |
 |-------|-------------|
 | `/fk-camera-guide` | Camera angles, movements, lighting, DOF for cinematic video prompts |
+| `/fk-thumbnail-guide` | Hook-worthy thumbnail design rules |
 
 ### TTS & Narration
 
 | Skill | Description |
 |-------|-------------|
 | `/fk-gen-tts-template` | Create a voice template for consistent narration |
+| `/fk-import-voice` | Import an existing voice recording as a template |
 | `/fk-gen-narrator` | Generate narrator text + TTS for all scenes |
 | `/fk-gen-text-overlays` | Generate text overlays from narrator text (dates, locations, stats) |
 | `/fk-concat-fit-narrator` | Trim scene videos to fit narrator duration, then concat |
+| `/fk-gen-music` | Generate background music via Suno |
 
 ### YouTube
 
@@ -502,18 +537,45 @@ Ready-to-use workflow recipes in `skills/` (also available as `/slash-commands` 
 | Skill | Description |
 |-------|-------------|
 | `/fk-status` | Full project dashboard + recommended next action |
+| `/fk-switch-project` | Switch the active project |
 | `/fk-fix-uuids` | Repair any CAMS... media_ids to UUID format |
+| `/fk-refresh-urls` | Refresh expired GCS signed URLs for images/videos |
+| `/fk-upload-image` | Upload a local image to get a `media_id` |
 | `/fk-add-material` | Image material system |
+| `/fk-change-model` | View/switch video, image, and upscale model keys |
+| `/fk-dashboard` | Live status in the Claude Code statusline |
+| `/fk-doctor` | Diagnose any error (Flow API, extension, worker, YouTube) and prescribe a fix |
 
-### AI CLI Compatibility
+### AI CLI Compatibility (Skill Consumption)
 
-Skills work with any AI CLI that can read files:
+Skills are `.md` recipes any AI coding-assistant CLI can read and follow — this is about **which agent reads the skill files**, not which model does the work:
 
 | CLI | Instructions | How skills work |
 |-----|-------------|-----------------|
-| Claude Code | `CLAUDE.md` (auto-loaded) | Native `/fk:` slash commands |
-| Codex CLI | `AGENTS.md` → reads `CLAUDE.md` | User says `/fk:<name>`, agent reads `skills/fk:<name>.md` |
+| Claude Code | `CLAUDE.md` (auto-loaded) | Native `/fk-*` slash commands |
+| Codex CLI | `AGENTS.md` → reads `CLAUDE.md` | User says `/fk-<name>`, agent reads `skills/fk-<name>.md` |
 | Gemini CLI | `GEMINI.md` → reads `CLAUDE.md` | Same pattern |
+
+### AI Vision Providers (Video Review)
+
+Separate from the table above — this is about **which CLI backend does the vision analysis** for `/fk-review-video`. Three providers are supported and swappable at runtime, no restart required:
+
+| Provider | Binary | Setup |
+|----------|--------|-------|
+| `claude` | Claude Code CLI | Default — works out of the box |
+| `agy` | Google Antigravity CLI | Install separately, sign in once |
+| `codex` | OpenAI Codex CLI | `npm install -g @openai/codex`, then `codex login` once |
+
+```bash
+# View provider status (installed / version-tested / currently active)
+curl -s "http://127.0.0.1:8100/api/providers?live=true" | python3 -m json.tool
+
+# Switch provider — hot-reloaded immediately, no server restart
+curl -X PATCH http://127.0.0.1:8100/api/providers \
+  -H "Content-Type: application/json" -d '{"active": "agy"}'
+```
+
+Or just run `/fk-change-provider` for an interactive picker. Full details in `skills/fk-change-provider.md`.
 
 ## Video Generation Techniques
 
@@ -567,6 +629,13 @@ Skills work with any AI CLI that can read files:
 - **UUID enforcement** — extracts UUID from fifeUrl if response doesn't provide it directly
 - **Voice context** — auto-appends character `voice_description` to video prompts
 - **No background music** — auto-appends "no background music, keep sound effects" to all video prompts
+- **Dual video response schema** — Lite/Fast/Ultra models return `operations[]` and stream URLs; Low Priority models (`veo_3_1_*_low_priority`, `*_ultra_relaxed`) return `workflows + media` with the MP4 inline as base64. The SDK auto-detects, validates the `ftyp` magic, and saves the binary to `output/_workflow_videos/{media_id}.mp4`. The scene's `_video_url` is then a `file://` path which `curl` and `ffmpeg` handle natively. `_video_media_id` always stores the real Flow media UUID, so upscale works for both schemas.
+
+### Default Model & Tier Compatibility
+
+The default for `PAYGATE_TIER_TWO` `frame_2_video` and `start_end_frame_2_video` is `veo_3_1_i2v_lite_low_priority` — the TRUE 0-credit Low Priority that works on every service tier including `SERVICE_TIER_ADVANCED`.
+
+The `*_ultra_relaxed` family (Low Priority ultra-quality) silently returns empty operations on `SERVICE_TIER_ADVANCED` accounts because Google requires `SERVICE_TIER_ULTRA` for that path. ULTRA-tier users can switch back via `/fk-change-model` — see `skills/fk-change-model.md` for the full preset list and tier compatibility matrix.
 
 ## Material System
 
@@ -601,18 +670,21 @@ Materials control both entity `image_prompt` style and scene `scene_prefix`. Exa
 ```
 agent/
 ├── main.py              # FastAPI app + WebSocket server
-├── config.py            # Configuration (loads models.json)
+├── config.py            # Configuration (loads models.json, providers.json)
 ├── models.json          # Video/upscale/image model mappings
+├── providers.json        # Active AI CLI provider for video review (claude/agy/codex)
 ├── db/
 │   ├── schema.py        # SQLite schema (aiosqlite)
 │   └── crud.py          # Async CRUD with column whitelisting
 ├── models/              # Pydantic models + Literal enums
-├── api/                 # REST routes (projects, videos, scenes, characters, requests, flow)
+├── api/                 # REST routes (projects, videos, scenes, characters, requests,
+│                         #   flow, models, providers, reviews, materials, music, tts)
 ├── services/
 │   ├── flow_client.py   # WS bridge to extension
 │   ├── headers.py       # Randomized browser headers
 │   ├── tts.py           # OmniVoice TTS (subprocess-based)
 │   ├── scene_chain.py   # Continuation scene logic
+│   ├── video_reviewer.py # AI vision review — contact sheet + claude/agy/codex CLI dispatch
 │   └── post_process.py  # ffmpeg trim/merge/music
 └── worker/
     └── processor.py     # Queue processor + poller
@@ -717,6 +789,7 @@ These arrive in the response body as `data.error.details[].reason`. The worker a
 | `Requested entity was not found` | Uploaded `media_id` expired (~1h TTL) | Auto-recover via `_recover_entity_not_found` — re-uploads from `image_url`, re-queues PENDING |
 | `Internal error encountered` | Flow backend transient 500 | Exponential backoff retry: `2^retry * 10s`, capped 300s |
 | `reCAPTCHA failed` / `captcha` | Extension couldn't solve CAPTCHA | Retry up to 10× without incrementing `retry_count` (processor.py:454-464) |
+| `PUBLIC_ERROR_UNUSUAL_ACTIVITY` (403, message `reCAPTCHA evaluation failed`) | Google flagged the session as bot-like — usually rapid bursts of submits, VPN/shared IP, or stale auth cookies | NOT auto-recoverable. Pause submits, clear cookies for `google.com` + `labs.google` in Chrome, sign back in at `labs.google/fx/tools/flow`, then resubmit with ≥1s gap and ≤5 concurrent. See `/fk-doctor` for full playbook. |
 
 ### HTTP Status Codes
 
@@ -781,6 +854,7 @@ From `youtube/upload.py` (HTTP errors from YouTube Data API v3):
 | Extension shows "No token" | Expected on the batch path — there is no bearer token any more |
 | `CAPTCHA_FAILED: NO_FLOW_TAB` | Open a Google Flow tab |
 | 403 `MODEL_ACCESS_DENIED` | Tier mismatch — check `/api/flow/credits`, downgrade model in `models.json` |
+| 403 `PUBLIC_ERROR_UNUSUAL_ACTIVITY` / `reCAPTCHA evaluation failed` | Pause submits, clear cookies for `google.com` + `labs.google` in Chrome, sign back in, then resubmit with ≥1s gap and ≤5 concurrent. Switch network or wait 1–6 h if still blocked |
 | Scene images inconsistent | Check all refs have UUID `media_id` — run `/fk-fix-uuids` |
 | `media_id` starts with `CAMS...` | Run `/fk-fix-uuids` to extract UUID from URL |
 | Upscale "permission denied" | Requires `PAYGATE_TIER_TWO` account |
@@ -798,17 +872,19 @@ MIT
 ## Community & Support
 
 <p align="center">
-  <a href="https://www.facebook.com/groups/flowkit.flowboard.community">
-    <img src="https://img.shields.io/badge/Join%20the%20Community-FlowKit%20%26%20Flowboard%20on%20Facebook-1877F2?style=for-the-badge&logo=facebook&logoColor=white" alt="Join the FlowKit & Flowboard Facebook Group" />
+  <a href="https://www.facebook.com/groups/vibecodeera">
+    <img src="https://img.shields.io/badge/Join%20the%20Community-Vibe%20Code%20Era%20on%20Facebook-1877F2?style=for-the-badge&logo=facebook&logoColor=white" alt="Join the Vibe Code Era Facebook Group" />
   </a>
 </p>
 
-The shared community for both **FlowKit** and **Flowboard**. Drop in to:
+**Share anything crazy and useful created with Vibe Code.** Drop in to:
 
 - Post the story-video runs and thumbnails you've generated
 - Share scene templates, prompt recipes, and reference-image setups
 - Ask for help when an output isn't matching what you imagined
 - Request features and report bugs you've hit in the wild
 - Trade tips on Google Flow plan limits, Veo i2v behaviour, and Chrome extension setup
+- Facebook Post via Extension MCP
+- Right way to build Mobile Application + System
 
-→ **[facebook.com/groups/flowkit.flowboard.community](https://www.facebook.com/groups/flowkit.flowboard.community)**
+→ **[facebook.com/groups/vibecodeera](https://www.facebook.com/groups/vibecodeera)**

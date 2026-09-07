@@ -1,14 +1,14 @@
 """Video review engine — frame extraction + Claude Vision analysis.
 
 Two analysis backends:
-  1. Claude CLI subprocess (default) — no API key needed, uses contact sheet
+  1. CLI subprocess (claude/agy/codex, default) — no API key needed, uses contact sheets
   2. Anthropic SDK (if ANTHROPIC_API_KEY set) — direct API, individual frames
 """
 import asyncio
 import base64
 import json
 import logging
-import math
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -18,7 +18,17 @@ import ssl
 import aiohttp
 import certifi
 
-from agent.config import ANTHROPIC_API_KEY, REVIEW_MODEL, REVIEW_FPS_LIGHT, REVIEW_FPS_DEEP, REVIEW_MAX_FRAMES
+from agent import config
+from agent.config import (
+    ANTHROPIC_API_KEY,
+    REVIEW_MODEL,
+    REVIEW_FPS_LIGHT,
+    REVIEW_FPS_DEEP,
+    REVIEW_MAX_FRAMES,
+    REVIEW_CLI_TIMEOUT_S,
+    REVIEW_SHEET_COLS,
+    REVIEW_SHEET_ROWS,
+)
 from agent.db.crud import list_scenes, get_project_characters
 from agent.models.review import DimensionScores, SceneReview, SegmentScore, VideoError, VideoReview
 
@@ -179,39 +189,67 @@ def _frame_to_base64(path: Path) -> str:
     return base64.standard_b64encode(path.read_bytes()).decode()
 
 
-def _create_contact_sheet(video_path: str, fps: float, out_dir: str, cols: int = 8) -> tuple[Path, int]:
-    """Create a single contact sheet grid image with timestamps. Returns (path, frame_count)."""
-    probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", video_path],
-        capture_output=True, text=True,
-    )
-    duration = float(probe.stdout.strip())
-    total_frames = int(duration * fps)
-    rows = math.ceil(total_frames / cols)
-    output = Path(out_dir) / "contact_sheet.jpg"
+def _create_contact_sheets(video_path: str, fps: float, out_dir: str) -> tuple[list[Path], int]:
+    """Extract all frames (timestamped) and tile them into REVIEW_SHEET_COLSxREVIEW_SHEET_ROWS sheets.
 
-    cmd = [
+    Returns (sheet_paths in chronological order, total_frames after any REVIEW_MAX_FRAMES cap).
+    """
+    frames_dir = Path(out_dir) / "frames"
+    frames_dir.mkdir(exist_ok=True)
+    extract_cmd = [
         "ffmpeg", "-y", "-i", video_path,
         "-vf", (
             f"fps={fps},"
             f"scale=320:-1,"
             f"drawtext=text='%{{pts\\:hms}}':x=5:y=5:fontsize=14:"
-            f"fontcolor=white:borderw=1:bordercolor=black,"
-            f"tile={cols}x{rows}"
+            f"fontcolor=white:borderw=1:bordercolor=black"
         ),
-        "-q:v", "2", str(output),
+        "-q:v", "2",
+        f"{frames_dir}/frame_%04d.jpg",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(extract_cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"Contact sheet failed: {result.stderr[-500:]}")
-    return output, total_frames
+        raise RuntimeError(f"Frame extraction failed: {result.stderr[-500:]}")
+
+    frames = sorted(frames_dir.glob("frame_*.jpg"))
+    if len(frames) > REVIEW_MAX_FRAMES:
+        step = len(frames) / REVIEW_MAX_FRAMES
+        frames = [frames[int(i * step)] for i in range(REVIEW_MAX_FRAMES)]
+
+    per_sheet = REVIEW_SHEET_COLS * REVIEW_SHEET_ROWS
+    sheets = []
+    for sheet_idx, start in enumerate(range(0, len(frames), per_sheet)):
+        chunk = frames[start:start + per_sheet]
+        chunk_dir = Path(out_dir) / f"_chunk_{sheet_idx:02d}"
+        chunk_dir.mkdir(exist_ok=True)
+        for i, frame_path in enumerate(chunk, start=1):
+            os.symlink(frame_path.resolve(), chunk_dir / f"f_{i:04d}.jpg")
+        output = Path(out_dir) / f"sheet_{sheet_idx:02d}.jpg"
+        # Pick the largest divisor of the chunk size (up to REVIEW_SHEET_COLS) as the
+        # column count, so every cell in the tile is filled — zero unfilled cells for any
+        # chunk size. A fixed/undersized-but-not-exact layout leaves unfilled cells
+        # rendered as a solid color block (not blank), which vision models can and do
+        # misread as a defect in the source video (confirmed via a live review call).
+        cols_eff = max(c for c in range(1, REVIEW_SHEET_COLS + 1) if len(chunk) % c == 0)
+        rows_eff = len(chunk) // cols_eff
+        tile_cmd = [
+            "ffmpeg", "-y",
+            "-i", f"{chunk_dir}/f_%04d.jpg",
+            "-vf", f"tile={cols_eff}x{rows_eff}:nb_frames={len(chunk)}",
+            "-q:v", "2", str(output),
+        ]
+        result = subprocess.run(tile_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Contact sheet tiling failed: {result.stderr[-500:]}")
+        sheets.append(output)
+
+    return sheets, len(frames)
 
 
 # ─── Claude Vision analysis ───────────────────────────────────
 
 _VISION_PROMPT = """\
-You are an expert AI video quality reviewer analyzing {n_frames} frames at {fps}fps from an 8-second AI-generated video.
+You are an expert AI video quality reviewer analyzing {n_frames} frames at {fps}fps from an 8-second AI-generated video.{sheet_note}
 
 SCENE IMAGE PROMPT: {prompt}
 SCENE VIDEO PROMPT: {video_prompt}
@@ -274,10 +312,18 @@ def _parse_character_names(scene: dict) -> list[str]:
         return []
 
 
-def _build_prompt(n_frames: int, fps: float, scene: dict) -> str:
+def _build_prompt(n_frames: int, fps: float, n_sheets: int, scene: dict) -> str:
+    sheet_note = (
+        f" The frames are provided across {n_sheets} sequential contact sheets "
+        f"(each fully packed, up to {REVIEW_SHEET_COLS}x{REVIEW_SHEET_ROWS} cells — the last sheet "
+        f"may use a different grid shape to fit its frame count exactly, in chronological order — "
+        f"sheet 1 is earliest, sheet {n_sheets} is latest)."
+        if n_sheets > 1 else ""
+    )
     return _VISION_PROMPT.format(
         n_frames=n_frames,
         fps=fps,
+        sheet_note=sheet_note,
         prompt=scene.get("prompt") or "",
         video_prompt=scene.get("video_prompt") or "",
         character_names=", ".join(_parse_character_names(scene)) or "none specified",
@@ -300,33 +346,101 @@ def _parse_json_response(raw: str) -> dict:
     return json.loads(raw)
 
 
-# ─── Backend 1: Claude CLI (default, no API key needed) ──────
+# ─── Backend 1: CLI providers (default, no API key needed) ───
+
+PROVIDER_BINARIES = {
+    "claude": "claude",
+    "agy": "agy",
+    "codex": "codex",
+}
+
+
+async def _communicate_with_timeout(proc, provider: str) -> tuple:
+    try:
+        return await asyncio.wait_for(proc.communicate(), timeout=REVIEW_CLI_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError(f"{provider} CLI timed out after {REVIEW_CLI_TIMEOUT_S}s")
+
+
+async def _spawn_and_check(args: tuple, provider: str) -> bytes:
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await _communicate_with_timeout(proc, provider)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{provider} CLI failed (rc={proc.returncode}): {stderr.decode()[-500:]}")
+    return stdout
+
+
+async def _run_claude_cli(prompt: str) -> str:
+    stdout = await _spawn_and_check(
+        ("claude", "-p", prompt, "--allowedTools", "Read", "--output-format", "text"), "claude"
+    )
+    return stdout.decode()
+
+
+async def _run_agy_cli(prompt: str) -> str:
+    stdout = await _spawn_and_check(
+        ("agy", "-p", prompt, "--dangerously-skip-permissions", "--output-format", "text"), "agy"
+    )
+    return stdout.decode()
+
+
+async def _run_codex_cli(prompt: str, contact_sheets: list[Path]) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
+        out_path = Path(tmp.name)
+    try:
+        image_args = []
+        for sheet in contact_sheets:
+            image_args.extend(["-i", str(sheet)])
+        await _spawn_and_check(
+            (
+                "codex", "exec",
+                *image_args,
+                "-o", str(out_path),
+                "--dangerously-bypass-approvals-and-sandbox",
+                prompt,
+            ),
+            "codex",
+        )
+        return out_path.read_text()
+    finally:
+        out_path.unlink(missing_ok=True)
+
 
 async def _analyze_cli(
-    contact_sheet: Path,
+    contact_sheets: list[Path],
     n_frames: int,
     fps: float,
     scene: dict,
 ) -> dict:
-    """Analyze contact sheet via claude CLI subprocess."""
-    prompt = _build_prompt(n_frames, fps, scene)
-    full_prompt = (
-        f"Read the image at {contact_sheet}. "
-        f"It is a contact sheet of {n_frames} video frames at {fps}fps with timestamps.\n\n"
-        f"{prompt}"
-    )
-    logger.info("Calling claude CLI for vision analysis (%d frames)", n_frames)
-    proc = await asyncio.create_subprocess_exec(
-        "claude", "-p", full_prompt,
-        "--allowedTools", "Read",
-        "--output-format", "text",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude CLI failed (rc={proc.returncode}): {stderr.decode()[-500:]}")
-    return _parse_json_response(stdout.decode())
+    """Analyze contact sheets via the active CLI provider (claude/agy/codex)."""
+    n_sheets = len(contact_sheets)
+    base_prompt = _build_prompt(n_frames, fps, n_sheets, scene)
+    provider = config.CLI_PROVIDERS["active"]
+    logger.info("Calling %s CLI for vision analysis (%d frames, %d sheets)", provider, n_frames, n_sheets)
+    if n_sheets == 1:
+        sheet_intro = f"It is a contact sheet of {n_frames} video frames at {fps}fps with timestamps."
+    else:
+        sheet_intro = (
+            f"These are {n_sheets} sequential contact sheets covering {n_frames} video frames "
+            f"at {fps}fps with timestamps, in chronological order (sheet 1 is earliest)."
+        )
+    if provider == "codex":
+        full_prompt = f"{sheet_intro}\n\n{base_prompt}"
+        raw = await _run_codex_cli(full_prompt, contact_sheets)
+    else:
+        if n_sheets == 1:
+            read_instruction = f"Read the image at {contact_sheets[0]}."
+        else:
+            sheet_list = ", ".join(str(s) for s in contact_sheets)
+            read_instruction = f"Read the images at: {sheet_list}, in that order."
+        full_prompt = f"{read_instruction} {sheet_intro}\n\n{base_prompt}"
+        runner = {"claude": _run_claude_cli, "agy": _run_agy_cli}[provider]
+        raw = await runner(full_prompt)
+    return _parse_json_response(raw)
 
 
 # ─── Backend 2: Anthropic SDK (when API key is set) ──────────
@@ -341,7 +455,8 @@ async def _analyze_sdk(
     import anthropic
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     character_names = _parse_character_names(scene)
-    prompt_text = _build_prompt(len(frames), fps, scene)
+    # SDK path sends individual frames, not tiled sheets; n_sheets=1 renders no sheet_note.
+    prompt_text = _build_prompt(len(frames), fps, 1, scene)
 
     content = []
     for char in characters:
@@ -416,15 +531,15 @@ async def review_scene_video(
             logger.info("Analyzing %d frames via Anthropic SDK", n_frames)
             result = await _analyze_sdk(frames, fps, scene, characters)
         else:
-            # CLI path: contact sheet (no API key needed)
-            logger.info("Creating contact sheet at %sfps (CLI mode)", fps)
-            contact_sheet, n_frames = await asyncio.get_event_loop().run_in_executor(
-                None, _create_contact_sheet, str(video_path), fps, tmp
+            # CLI path: contact sheets (no API key needed)
+            logger.info("Creating contact sheets at %sfps (CLI mode)", fps)
+            contact_sheets, n_frames = await asyncio.get_event_loop().run_in_executor(
+                None, _create_contact_sheets, str(video_path), fps, tmp
             )
-            if not contact_sheet.exists():
-                raise RuntimeError(f"Contact sheet not created for scene {scene['id']}")
-            logger.info("Analyzing %d frames via claude CLI", n_frames)
-            result = await _analyze_cli(contact_sheet, n_frames, fps, scene)
+            if not contact_sheets or not all(s.exists() for s in contact_sheets):
+                raise RuntimeError(f"Contact sheets not created for scene {scene['id']}")
+            logger.info("Analyzing %d frames across %d sheets via CLI provider", n_frames, len(contact_sheets))
+            result = await _analyze_cli(contact_sheets, n_frames, fps, scene)
 
     # Parse structured errors with severity
     errors = []

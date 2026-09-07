@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react'
 import type { Scene } from '../../types'
+import { useTranslation } from '../../i18n/useTranslation'
+import { chainLabel } from '../../i18n/labels'
+
+type GalleryScene = Scene & { videoTitle?: string }
 
 interface VideoPlayerProps {
-  scenes: Scene[]
+  scenes: GalleryScene[]
   initialIndex: number
   onClose: () => void
 }
@@ -19,6 +23,7 @@ function parseCharacterNames(raw: string | null): string[] {
 }
 
 export default function VideoPlayer({ scenes, initialIndex, onClose }: VideoPlayerProps) {
+  const { t } = useTranslation()
   const [index, setIndex] = useState(initialIndex)
   const scene = scenes[index]
 
@@ -78,32 +83,32 @@ export default function VideoPlayer({ scenes, initialIndex, onClose }: VideoPlay
           className="flex flex-col p-4 gap-3 overflow-y-auto"
           style={{ width: 320, background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ background: 'var(--card)', color: 'var(--muted)' }}>
-              Scene #{scene.display_order + 1}
+              {scene.videoTitle ? `${scene.videoTitle} · ` : ''}{t('videoPlayer.sceneLabel', { n: scene.display_order + 1 })}
             </span>
             <span className="text-xs font-semibold px-2 py-0.5 rounded" style={chainBadgeStyle(scene.chain_type)}>
-              {scene.chain_type}
+              {chainLabel(t, scene.chain_type)}
             </span>
           </div>
 
           {scene.prompt && (
             <div>
-              <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>PROMPT</div>
+              <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>{t('videoPlayer.prompt')}</div>
               <div className="text-xs" style={{ color: 'var(--text)' }}>{scene.prompt}</div>
             </div>
           )}
 
           {scene.video_prompt && (
             <div>
-              <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>VIDEO PROMPT</div>
+              <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>{t('videoPlayer.videoPrompt')}</div>
               <div className="text-xs whitespace-pre-wrap" style={{ color: 'var(--text)' }}>{scene.video_prompt}</div>
             </div>
           )}
 
           {charNames.length > 0 && (
             <div>
-              <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>CHARACTERS</div>
+              <div className="text-xs font-bold mb-1" style={{ color: 'var(--muted)' }}>{t('videoPlayer.characters')}</div>
               <div className="flex flex-wrap gap-1">
                 {charNames.map(name => (
                   <span key={name} className="text-xs px-2 py-0.5 rounded" style={{ background: 'var(--card)', color: 'var(--accent)' }}>
@@ -121,7 +126,7 @@ export default function VideoPlayer({ scenes, initialIndex, onClose }: VideoPlay
             className="text-xs px-3 py-1.5 rounded text-center font-semibold mt-auto"
             style={{ background: 'var(--accent)', color: '#fff', textDecoration: 'none' }}
           >
-            Download
+            {t('videoPlayer.download')}
           </a>
 
           {/* Prev / Next */}
@@ -132,7 +137,7 @@ export default function VideoPlayer({ scenes, initialIndex, onClose }: VideoPlay
               className="flex-1 text-xs py-1.5 rounded font-semibold disabled:opacity-30"
               style={{ background: 'var(--card)', color: 'var(--text)', border: '1px solid var(--border)' }}
             >
-              Prev
+              {t('videoPlayer.prev')}
             </button>
             <button
               disabled={index === scenes.length - 1}
@@ -140,7 +145,7 @@ export default function VideoPlayer({ scenes, initialIndex, onClose }: VideoPlay
               className="flex-1 text-xs py-1.5 rounded font-semibold disabled:opacity-30"
               style={{ background: 'var(--card)', color: 'var(--text)', border: '1px solid var(--border)' }}
             >
-              Next
+              {t('videoPlayer.next')}
             </button>
           </div>
         </div>

@@ -1,9 +1,16 @@
 """Direct Flow API endpoints — for manual operations outside the queue."""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Literal, Optional
+
 from agent.config import USE_BATCH_RPC, FLOW_PROJECT_ID, FLOW_ALLOW_DEGRADED
 from agent.services.flow_client import get_flow_client
+from agent.services.omni_flash import (
+    check_omni_flash_status,
+    generate_omni_flash_first_frame_video,
+    generate_omni_flash_first_last_video,
+    generate_omni_flash_video,
+)
 
 router = APIRouter(prefix="/flow", tags=["flow"])
 
@@ -24,6 +31,9 @@ class GenerateVideoRequest(BaseModel):
     aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT"
     end_image_media_id: Optional[str] = None
     user_paygate_tier: str = "PAYGATE_TIER_ONE"
+    # Backward compatible: legacy requests remain Veo unless explicitly set.
+    model_family: Literal["veo", "omni_flash"] = "veo"
+    duration_s: int = 8
 
 
 class GenerateVideoRefsRequest(BaseModel):
@@ -31,6 +41,20 @@ class GenerateVideoRefsRequest(BaseModel):
     prompt: str
     project_id: str
     scene_id: str
+    aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT"
+    user_paygate_tier: str = "PAYGATE_TIER_ONE"
+    # Backward compatible: existing callers keep the Veo R2V path unless they
+    # explicitly opt into Omni Flash.
+    model_family: Literal["veo", "omni_flash"] = "veo"
+    duration_s: int = 8
+
+
+class GenerateOmniFlashVideoRequest(BaseModel):
+    reference_media_ids: list[str]
+    prompt: str
+    project_id: str
+    scene_id: str = ""
+    duration_s: int = 8
     aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT"
     user_paygate_tier: str = "PAYGATE_TIER_ONE"
 
@@ -49,7 +73,19 @@ class UploadImageRequest(BaseModel):
 
 
 class CheckStatusRequest(BaseModel):
-    operations: list[dict]
+    operations: list[dict] = []
+    # Omni/workflow-mode callers should pass workflow descriptors instead of
+    # operation handles. If workflows is set, /check-status automatically uses
+    # authenticated Flow project polling.
+    workflows: Optional[list[dict]] = None
+    project_id: str = ""
+    include_encoded_video: bool = False
+
+
+class CheckOmniStatusRequest(BaseModel):
+    workflows: list[dict]
+    project_id: str = ""
+    include_encoded_video: bool = False
 
 
 class EditImageRequest(BaseModel):
@@ -103,11 +139,45 @@ async def generate_image(body: GenerateImageRequest):
 
 @router.post("/generate-video")
 async def generate_video(body: GenerateVideoRequest):
-    """Submit video generation (returns operations for polling)."""
+    """Submit frame-conditioned video generation using Veo or Omni Flash.
+
+    Existing callers default to Veo. For Omni set ``model_family=omni_flash``
+    and ``duration_s`` to 4/6/8/10. With only ``start_image_media_id`` the
+    request uses Omni First frame. When ``end_image_media_id`` is also present,
+    it uses Omni First+Last frames.
+
+    Omni responses include ``flowkitPolling.workflows`` and must use workflow
+    media polling rather than legacy operation polling.
+    """
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
-    result = await client.generate_video(**body.model_dump(exclude_none=True))
+
+    if body.model_family == "omni_flash":
+        try:
+            common = dict(
+                start_image_media_id=body.start_image_media_id,
+                prompt=body.prompt,
+                project_id=body.project_id,
+                scene_id=body.scene_id,
+                duration_s=body.duration_s,
+                aspect_ratio=body.aspect_ratio,
+                user_paygate_tier=body.user_paygate_tier,
+            )
+            if body.end_image_media_id:
+                result = await generate_omni_flash_first_last_video(
+                    end_image_media_id=body.end_image_media_id,
+                    **common,
+                )
+            else:
+                result = await generate_omni_flash_first_frame_video(**common)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    else:
+        result = await client.generate_video(
+            **body.model_dump(exclude={"model_family", "duration_s"}, exclude_none=True)
+        )
+
     if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
         raise HTTPException(result.get("status", 502), result.get("error", result.get("data")))
     return result.get("data", result)
@@ -115,11 +185,54 @@ async def generate_video(body: GenerateVideoRequest):
 
 @router.post("/generate-video-refs")
 async def generate_video_refs(body: GenerateVideoRefsRequest):
-    """Submit r2v video generation from reference images."""
+    """Submit reference-to-video generation using Veo or Gemini Omni Flash.
+
+    Existing requests default to ``model_family=veo``. Set
+    ``model_family=omni_flash`` and ``duration_s`` to 4/6/8/10 to use Omni.
+    Omni responses include ``flowkitPolling.workflows``; poll those workflows,
+    not the operation-looking handles in the raw Flow response.
+    """
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
-    result = await client.generate_video_from_references(**body.model_dump())
+
+    if body.model_family == "omni_flash":
+        try:
+            result = await generate_omni_flash_video(
+                reference_media_ids=body.reference_media_ids,
+                prompt=body.prompt,
+                project_id=body.project_id,
+                scene_id=body.scene_id,
+                duration_s=body.duration_s,
+                aspect_ratio=body.aspect_ratio,
+                user_paygate_tier=body.user_paygate_tier,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    else:
+        result = await client.generate_video_from_references(
+            **body.model_dump(exclude={"model_family", "duration_s"})
+        )
+
+    if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
+        raise HTTPException(result.get("status", 502), result.get("error", result.get("data")))
+    return result.get("data", result)
+
+
+@router.post("/generate-video-omni")
+async def generate_video_omni(body: GenerateOmniFlashVideoRequest):
+    """Submit Gemini Omni Flash reference-to-video generation.
+
+    The response includes ``flowkitPolling.workflows`` for the correct
+    workflow/media polling path.
+    """
+    client = get_flow_client()
+    if not client.connected:
+        raise HTTPException(503, "Extension not connected")
+    try:
+        result = await generate_omni_flash_video(**body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
         raise HTTPException(result.get("status", 502), result.get("error", result.get("data")))
     return result.get("data", result)
@@ -139,14 +252,54 @@ async def upscale_video(body: UpscaleVideoRequest):
 
 @router.post("/check-status")
 async def check_status(body: CheckStatusRequest):
-    """Check video generation status."""
+    """Check Veo operation status or Omni workflow/media status.
+
+    Veo: pass ``operations``.
+    Omni Flash: pass ``workflows`` from submit ``flowkitPolling.workflows``.
+    """
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
+
+    if body.workflows:
+        try:
+            return await check_omni_flash_status(
+                body.workflows,
+                include_encoded_video=body.include_encoded_video,
+                project_id=body.project_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+    if not body.operations:
+        raise HTTPException(400, "Provide operations for Veo or workflows for Omni Flash")
+
     result = await client.check_video_status(body.operations)
     if result.get("error"):
         raise HTTPException(502, result["error"])
+    if isinstance(result.get("status"), int) and result["status"] >= 400:
+        raise HTTPException(result["status"], result.get("data", "Flow polling failed"))
     return result.get("data", result)
+
+
+@router.post("/check-omni-status")
+async def check_omni_status(body: CheckOmniStatusRequest):
+    """Poll Gemini Omni Flash jobs via workflow primary media IDs."""
+    client = get_flow_client()
+    if not client.connected:
+        raise HTTPException(503, "Extension not connected")
+    try:
+        return await check_omni_flash_status(
+            body.workflows,
+            include_encoded_video=body.include_encoded_video,
+            project_id=body.project_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.post("/refresh-urls/{project_id}")
@@ -165,8 +318,8 @@ async def refresh_project_urls(project_id: str):
 async def get_media(media_id: str):
     """Get media metadata + fresh signed URL from Google Flow.
 
-    Returns the raw response which should contain a fresh fifeUrl/servingUri.
-    Use this to refresh expired GCS signed URLs.
+    Returns the raw response which may contain ``video.encodedVideo`` for
+    workflow-backed video generations.
     """
     client = get_flow_client()
     if not client.connected:

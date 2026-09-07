@@ -10,8 +10,15 @@ youtube
 agent/active_project.json
 
 # Generated AI tool configs (run: python setup.py)
-.claude/commands/fk:*
+.claude/commands/fk-*
 .gemini/commands/
 AGENTS.md
 GEMINI.md
 .fk-setup.json
+
+# design-sync (staged converter scripts, build output, machine state)
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules

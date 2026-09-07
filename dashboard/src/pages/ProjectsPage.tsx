@@ -3,6 +3,11 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { fetchAPI } from '../api/client'
 import type { Project } from '../types'
 import ProjectDetailPage from './ProjectDetailPage'
+import { useTranslation } from '../i18n/useTranslation'
+import type { TranslationKey } from '../i18n/translations'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardAction, CardFooter } from '../components/ui/card'
+import { Badge } from '../components/ui/badge'
+import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs'
 
 type FilterTab = 'ACTIVE' | 'ARCHIVED' | 'ALL'
 
@@ -10,58 +15,39 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString()
 }
 
-function TierBadge({ tier }: { tier: string | null }) {
+function TierBadge({ tier, t }: { tier: string | null; t: (key: TranslationKey) => string }) {
   if (!tier) return null
   const isTwo = tier.includes('TWO')
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold"
-      style={{ background: isTwo ? 'rgba(245,158,11,0.2)' : 'rgba(59,130,246,0.2)', color: isTwo ? 'var(--yellow)' : 'var(--accent)' }}
-    >
-      {isTwo ? 'TIER 2' : 'TIER 1'}
-    </span>
-  )
+  return <Badge variant={isTwo ? 'default' : 'secondary'}>{isTwo ? t('projects.tier2') : t('projects.tier1')}</Badge>
 }
 
-function ProjectCard({ project, onClick }: { project: Project; onClick: () => void }) {
+function ProjectCard({ project, onClick, t }: { project: Project; onClick: () => void; t: (key: TranslationKey, params?: Record<string, string | number>) => string }) {
   return (
-    <div
-      className="rounded-lg p-4 cursor-pointer transition-opacity hover:opacity-80 flex flex-col gap-2"
-      style={{ background: 'var(--card)', border: '1px solid var(--border)' }}
-      onClick={onClick}
-    >
-      <div className="font-bold text-sm" style={{ color: 'var(--text)' }}>
-        {project.name}
-      </div>
-      {project.description && (
-        <div
-          className="text-xs overflow-hidden"
-          style={{
-            color: 'var(--muted)',
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical',
-          }}
-        >
-          {project.description}
-        </div>
-      )}
-      <div className="flex flex-wrap items-center gap-2 mt-auto pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-        {project.material && (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold" style={{ background: 'rgba(100,116,139,0.2)', color: 'var(--muted)' }}>
-            {project.material}
-          </span>
+    <Card className="py-4 gap-3 h-full cursor-pointer transition-opacity hover:opacity-90" onClick={onClick}>
+      <CardHeader>
+        <CardTitle className="text-sm">{project.name}</CardTitle>
+        {project.description && (
+          <CardDescription className="text-[11px] leading-relaxed line-clamp-2">{project.description}</CardDescription>
         )}
-        <TierBadge tier={project.user_paygate_tier} />
-        <span className="text-xs ml-auto" style={{ color: 'var(--muted)' }}>
-          {formatDate(project.created_at)}
-        </span>
-      </div>
-    </div>
+        <CardAction>
+          <TierBadge tier={project.user_paygate_tier} t={t} />
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap gap-1.5">
+          {project.material && <Badge variant="outline">{project.material}</Badge>}
+          <Badge variant="outline">{project.status}</Badge>
+        </div>
+      </CardContent>
+      <CardFooter>
+        <span className="text-[10px] tracking-wide" style={{ color: 'var(--muted)' }}>{t('projects.footer', { date: formatDate(project.created_at), id: project.id.slice(0, 8) })}</span>
+      </CardFooter>
+    </Card>
   )
 }
 
 export default function ProjectsPage() {
+  const { t } = useTranslation()
   const { id } = useParams<{ id?: string }>()
   const navigate = useNavigate()
   const [tab, setTab] = useState<FilterTab>('ACTIVE')
@@ -69,7 +55,6 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    setLoading(true)
     fetchAPI<Project[]>('/api/projects')
       .then(setProjects)
       .catch(console.error)
@@ -86,40 +71,27 @@ export default function ProjectsPage() {
     return p.status === tab
   })
 
-  const tabs: FilterTab[] = ['ACTIVE', 'ARCHIVED', 'ALL']
-
   return (
     <div className="flex flex-col gap-4">
-      {/* Filter tabs */}
-      <div className="flex gap-1">
-        {tabs.map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className="px-3 py-1.5 rounded text-xs font-semibold transition-colors"
-            style={{
-              background: tab === t ? 'var(--accent)' : 'var(--card)',
-              color: tab === t ? '#fff' : 'var(--muted)',
-              border: '1px solid var(--border)',
-            }}
-          >
-            {t}
-          </button>
-        ))}
+      <div className="flex items-center gap-3">
+        <Tabs value={tab} onValueChange={v => setTab(v as FilterTab)}>
+          <TabsList>
+            <TabsTrigger value="ACTIVE">{t('projects.tab.active')}</TabsTrigger>
+            <TabsTrigger value="ARCHIVED">{t('projects.tab.archived')}</TabsTrigger>
+            <TabsTrigger value="ALL">{t('projects.tab.all')}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <span className="ml-auto text-[11px]" style={{ color: 'var(--muted)' }}>{t('projects.count', { n: filtered.length })}</span>
       </div>
 
       {loading ? (
-        <div className="text-xs" style={{ color: 'var(--muted)' }}>Loading projects...</div>
+        <div className="text-xs" style={{ color: 'var(--muted)' }}>{t('projects.loading')}</div>
       ) : filtered.length === 0 ? (
-        <div className="text-xs" style={{ color: 'var(--muted)' }}>No {tab.toLowerCase()} projects.</div>
+        <div className="text-xs" style={{ color: 'var(--muted)' }}>{t(`projects.empty.${tab}` as TranslationKey)}</div>
       ) : (
-        <div className="grid grid-cols-1 gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
           {filtered.map(p => (
-            <ProjectCard
-              key={p.id}
-              project={p}
-              onClick={() => navigate(`/projects/${p.id}`)}
-            />
+            <ProjectCard key={p.id} project={p} onClick={() => navigate(`/projects/${p.id}`)} t={t} />
           ))}
         </div>
       )}

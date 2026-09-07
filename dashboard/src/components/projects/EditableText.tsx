@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useTranslation } from '../../i18n/useTranslation'
 
 interface EditableTextProps {
   value: string
@@ -8,6 +9,7 @@ interface EditableTextProps {
 }
 
 export default function EditableText({ value, onSave, multiline = false, className = '' }: EditableTextProps) {
+  const { t } = useTranslation()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(value)
   const inputRef = useRef<HTMLInputElement & HTMLTextAreaElement>(null)
@@ -42,9 +44,9 @@ export default function EditableText({ value, onSave, multiline = false, classNa
       <span
         className={`cursor-pointer hover:opacity-70 transition-opacity ${className}`}
         onClick={() => setEditing(true)}
-        title="Click to edit"
+        title={t('editableText.clickToEdit')}
       >
-        {value || <span style={{ color: 'var(--muted)' }}>(empty)</span>}
+        {value || <span style={{ color: 'var(--muted)' }}>{t('editableText.empty')}</span>}
       </span>
     )
   }

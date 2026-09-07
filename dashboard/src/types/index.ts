@@ -1,5 +1,5 @@
 // Enums
-export type RequestType = 'GENERATE_IMAGE' | 'REGENERATE_IMAGE' | 'EDIT_IMAGE' | 'GENERATE_VIDEO' | 'GENERATE_VIDEO_REFS' | 'UPSCALE_VIDEO' | 'GENERATE_CHARACTER_IMAGE' | 'REGENERATE_CHARACTER_IMAGE' | 'EDIT_CHARACTER_IMAGE'
+export type RequestType = 'GENERATE_IMAGE' | 'REGENERATE_IMAGE' | 'EDIT_IMAGE' | 'GENERATE_VIDEO' | 'REGENERATE_VIDEO' | 'GENERATE_VIDEO_REFS' | 'UPSCALE_VIDEO' | 'GENERATE_CHARACTER_IMAGE' | 'REGENERATE_CHARACTER_IMAGE' | 'EDIT_CHARACTER_IMAGE'
 export type StatusType = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
 export type Orientation = 'VERTICAL' | 'HORIZONTAL'
 export type ChainType = 'ROOT' | 'CONTINUATION' | 'INSERT'
@@ -112,4 +112,38 @@ export interface WSEvent {
   type: string
   data: Record<string, unknown>
   timestamp: string
+}
+
+// AI video review — match agent/models/review.py exactly
+export interface DimensionScores {
+  character_consistency: number
+  prompt_adherence: number
+  motion_quality: number
+  visual_fidelity: number
+  temporal_coherence: number
+  composition: number
+}
+
+export interface VideoError {
+  severity: string // CRITICAL / HIGH / MINOR
+  time_range: string
+  description: string
+}
+
+export interface SegmentScore {
+  time_range: string
+  score: number
+}
+
+export interface SceneReview {
+  scene_id: string
+  overall_score: number
+  verdict: string // excellent / good / acceptable / poor / unusable
+  dimensions: DimensionScores
+  errors: VideoError[]
+  usable_segments: SegmentScore[]
+  fix_guide: string
+  frames_analyzed: number
+  fps_used: number
+  has_critical_errors: boolean
 }

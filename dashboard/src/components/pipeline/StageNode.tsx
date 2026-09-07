@@ -1,69 +1,62 @@
-import type { LucideIcon } from 'lucide-react'
+import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent } from '../ui/card'
+import { Progress } from '../ui/progress'
+import { useTranslation } from '../../i18n/useTranslation'
 
-type StageStatus = 'completed' | 'processing' | 'pending' | 'failed'
+export type StageKey = 'refs' | 'image' | 'video' | 'upscale'
 
 interface StageNodeProps {
+  idx: string
   name: string
-  icon: LucideIcon
-  completed: number
+  subtitle: string
+  done: number
+  processing: number
+  failed: number
+  pending: number
   total: number
-  status: StageStatus
-  isExpanded: boolean
+  isActive: boolean
   onClick: () => void
 }
 
-const STATUS_COLORS: Record<StageStatus, string> = {
-  completed: 'var(--green)',
-  processing: 'var(--yellow)',
-  pending: 'var(--border)',
-  failed: 'var(--red)',
-}
-
-export default function StageNode({ name, icon: Icon, completed, total, status, isExpanded, onClick }: StageNodeProps) {
-  const pct = total === 0 ? 0 : Math.round((completed / total) * 100)
-  const borderColor = STATUS_COLORS[status]
+export default function StageNode({ idx, name, subtitle, done, processing, failed, pending, total, isActive, onClick }: StageNodeProps) {
+  const { t } = useTranslation()
+  const pct = total === 0 ? 0 : Math.round((done / total) * 100)
+  const accent = isActive ? 'var(--accent)' : 'var(--border)'
 
   return (
-    <button
-      onClick={onClick}
-      className="flex flex-col gap-2 p-3 rounded text-left transition-opacity hover:opacity-90 flex-1 min-w-0"
-      style={{
-        background: 'var(--card)',
-        border: `1px solid var(--border)`,
-        borderLeft: `3px solid ${borderColor}`,
-        outline: isExpanded ? `1px solid ${borderColor}` : 'none',
-      }}
-    >
-      <div className="flex items-center gap-2">
-        <Icon size={14} style={{ color: borderColor }} />
-        <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>
-          {name}
-        </span>
-        {status === 'processing' && (
-          <span
-            className="ml-auto inline-block w-1.5 h-1.5 rounded-full"
-            style={{ background: 'var(--yellow)', animation: 'pulse 1.5s ease-in-out infinite' }}
-          />
-        )}
-      </div>
-
-      <div className="text-xl font-bold" style={{ color: 'var(--text)' }}>
-        {completed}
-        <span className="text-sm font-normal" style={{ color: 'var(--muted)' }}>
-          /{total}
-        </span>
-      </div>
-
-      <div className="w-full rounded-full overflow-hidden" style={{ background: 'var(--border)', height: '3px' }}>
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, background: borderColor }}
-        />
-      </div>
-
-      <div className="text-xs" style={{ color: 'var(--muted)' }}>
-        {pct}% {status}
-      </div>
+    <button onClick={onClick} className="flex-1 min-w-0 text-left">
+      <Card className="gap-3 py-4">
+        <div style={{ height: 2, margin: '-16px 0 0', background: accent }} />
+        <CardHeader>
+          <CardTitle>
+            <span className="text-[10px] tracking-widest" style={{ color: 'var(--muted)' }}>{idx}</span>
+            <span className="ml-2 text-sm tracking-wide uppercase">{name}</span>
+          </CardTitle>
+          <CardDescription>
+            <span className="text-xs">{subtitle}</span>
+          </CardDescription>
+          <CardAction>
+            <span className="text-lg tracking-tight" style={{ color: isActive ? 'var(--accent)' : 'var(--text)' }}>{done}</span>
+            <span className="text-xs" style={{ color: 'var(--muted)' }}>/{total}</span>
+          </CardAction>
+        </CardHeader>
+        <CardContent>
+          <Progress value={pct} />
+          <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-3 text-[10px] tracking-wide" style={{ color: 'var(--muted)' }}>
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5" style={{ background: 'var(--green)' }} />{done} {t('stageNode.done')}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5" style={{ background: 'var(--yellow)' }} />{processing} {t('stageNode.proc')}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5" style={{ background: 'var(--red)' }} />{failed} {t('stageNode.fail')}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5" style={{ background: 'var(--border)' }} />{pending} {t('stageNode.pend')}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
     </button>
   )
 }

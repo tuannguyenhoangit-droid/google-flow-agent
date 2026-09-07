@@ -17,7 +17,7 @@ page can sign a Flow request, so nothing works headless.
 
 ## How to work
 
-- Always use `/fk:*` skills — all rules and workflows live inside each skill
+- Always use `/fk-*` skills — all rules and workflows live inside each skill
 - Never write scripts to loop API calls — use `POST /api/requests/batch`
 - `media_id` is always UUID format (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`), never `CAMS...` strings
 - **On any pipeline error** (request `FAILED`, stuck `PROCESSING`, `extension_connected: false`, HTTP 4xx/5xx from `:8100`, YouTube `HttpError`, error strings like `UNSAFE_GENERATION` / `not found` / `CAPTCHA` / `NO_AT_TOKEN` / `NO_FLOW_PROJECT` / `UNSUPPORTED_ON_BATCH_API`): invoke `/fk-doctor` before guessing a fix
@@ -30,8 +30,8 @@ that change how you work:
 
 - **Projects are not created by Flow Kit any more.** Make one in the Flow UI and
   pin its uuid as `FLOW_PROJECT_ID`, or pass `flow_project_id` to `POST /api/projects`.
-- **Three capabilities are unported** because their payloads were never captured:
-  4K upscale, r2v, and start+end-frame chaining. They fail with
+- **Four capabilities are unported** because their payloads were never captured:
+  4K upscale, r2v, start+end-frame chaining, and Omni Flash. They fail with
   `UNSUPPORTED_ON_BATCH_API` rather than silently producing the wrong thing.
   `FLOW_ALLOW_DEGRADED=1` drops chaining and r2v to plain i2v; upscale has no
   fallback. To restore one properly, see `docs/CAPTURE.md`.
@@ -65,6 +65,7 @@ that change how you work:
 | `/fk-doctor` | Diagnose errors + prescribe fixes (Flow/extension/worker/YT) |
 | `/fk-add-material` | Set image material style |
 | `/fk-change-model` | Change video/image model |
+| `/fk-change-provider` | View & switch AI CLI provider used for video review (claude/agy/codex) |
 | `/fk-insert-scene` | Insert scenes into chain |
 | `/fk-upload-image` | Upload local image to get media_id |
 | `/fk-thumbnail` | Generate YouTube thumbnails |

@@ -40,7 +40,7 @@ def _char_matches(c: dict, name_set: set) -> bool:
 import aiohttp
 
 from agent.db import crud
-from agent.config import VIDEO_POLL_INTERVAL, VIDEO_POLL_TIMEOUT
+from agent.config import USE_BATCH_RPC, VIDEO_POLL_INTERVAL, VIDEO_POLL_TIMEOUT
 from agent.utils.paths import scene_4k_path
 from agent.utils.slugify import slugify
 from agent.worker._parsing import (
@@ -93,14 +93,138 @@ def _save_raw_bytes(
 
 
 def _extract_operations(result: dict) -> list[dict]:
-    """Extract operations list from video gen / upscale submit response."""
+    """Extract operations list from video gen / upscale submit response.
+
+    Supports two response schemas:
+    - OLD (Lite/Fast/Ultra): {"data": {"operations": [{"operation": {"name": ...}, "status": ...}]}}
+    - NEW (Low Priority — veo_3_1_*_low_priority, *_ultra_relaxed):
+        {"data": {"workflows": [{"name": "...", "metadata": {"primaryMediaId": "..."}}],
+                  "media": [{"name": "...", ...}]}}
+    """
     data = result.get("data", result)
     ops = data.get("operations", [])
-    for op in ops:
-        op_name = op.get("operation", {}).get("name")
-        if not op_name:
-            logger.warning("Operation missing name: %s", op)
-    return ops
+    if ops:
+        for op in ops:
+            op_name = op.get("operation", {}).get("name")
+            if not op_name:
+                logger.warning("Operation missing name: %s", op)
+        return ops
+
+    # NEW schema: workflows + media → synthesize operation entries
+    workflows = data.get("workflows", [])
+    media_list = data.get("media", [])
+    if not workflows or not media_list:
+        return []
+
+    media_by_id = {m.get("name"): m for m in media_list if m.get("name")}
+    synthesized = []
+    for wf in workflows:
+        wf_name = wf.get("name", "")
+        meta = wf.get("metadata", {})
+        primary_media_id = meta.get("primaryMediaId", "")
+        if not wf_name or not primary_media_id:
+            continue
+        synthesized.append({
+            "operation": {
+                "name": wf_name,
+                "metadata": {"video": {"mediaId": primary_media_id}},
+            },
+            "status": "MEDIA_GENERATION_STATUS_PENDING",
+            "_workflow_mode": True,
+            "_primary_media_id": primary_media_id,
+        })
+    if synthesized:
+        logger.info("Detected workflow-schema response: %d workflow(s) → synthesized", len(synthesized))
+    return synthesized
+
+
+async def _poll_workflows(
+    client: FlowClient,
+    operations: list[dict],
+    timeout: int,
+) -> dict:
+    """Poll workflow-mode operations (Low Priority). Flow returns MP4 binary
+    inline as base64 in `video.encodedVideo` — decode and save to disk, then
+    synthesize an OLD-schema success response with a file:// URL.
+
+    The response shape is:
+      {"name": "<media_id>", "video": {"encodedVideo": "<base64 MP4>", ...}}
+
+    Detection logic:
+    - "ready" = response is a dict with keys {"name","video"} where video.encodedVideo
+      starts with AAAAI... (MP4 ftyp header in base64)
+    - "still gen" = response missing video block, or encodedVideo missing/empty
+    """
+    import base64
+    import os as _os
+
+    poll_interval = VIDEO_POLL_INTERVAL
+    elapsed = 0
+    completed = {}  # media_id → local_path
+
+    while elapsed < timeout:
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+        for op in operations:
+            mid = op.get("_primary_media_id", "")
+            if not mid or mid in completed:
+                continue
+            media_resp = await client.get_media(mid)
+            status = media_resp.get("status")
+            if status != 200:
+                logger.debug("Workflow media %s not ready (status=%s)", mid[:8], status)
+                continue
+
+            # Direct top-level (not wrapped in `data`)
+            payload = media_resp.get("data", media_resp) if isinstance(media_resp.get("data"), dict) and "video" in media_resp.get("data", {}) else media_resp
+            video_block = payload.get("video", {}) if isinstance(payload, dict) else {}
+            encoded = video_block.get("encodedVideo", "") if isinstance(video_block, dict) else ""
+
+            if not encoded:
+                continue
+            try:
+                binary = base64.b64decode(encoded)
+            except Exception as e:
+                logger.warning("Workflow media %s: failed to decode encodedVideo: %s", mid[:8], e)
+                continue
+            # Validate MP4 magic: real video starts with `ftyp` box at bytes 4-8.
+            # While generating, Flow returns metadata payload (~1-2KB) — skip until real MP4.
+            is_mp4 = len(binary) >= 12 and binary[4:8] == b"ftyp"
+            if not is_mp4:
+                logger.debug("Workflow media %s still generating (got %d bytes, not MP4)",
+                             mid[:8], len(binary))
+                continue
+            out_dir = "output/_workflow_videos"
+            _os.makedirs(out_dir, exist_ok=True)
+            out_path = f"{out_dir}/{mid}.mp4"
+            with open(out_path, "wb") as f:
+                f.write(binary)
+            completed[mid] = {"path": out_path, "size": len(binary)}
+            logger.info("Workflow media %s ready: saved %d bytes → %s",
+                        mid[:8], len(binary), out_path)
+
+        if len(completed) == len(operations):
+            synth_ops = []
+            for op in operations:
+                mid = op.get("_primary_media_id", "")
+                wf_name = op.get("operation", {}).get("name", "")
+                local = completed.get(mid, {}).get("path", "")
+                # Use file:// so downstream sees a URL-shaped string
+                local_url = f"file://{_os.path.abspath(local)}" if local else ""
+                synth_ops.append({
+                    "operation": {
+                        "name": wf_name,
+                        "metadata": {"video": {"mediaId": mid, "fifeUrl": local_url}},
+                    },
+                    "status": "MEDIA_GENERATION_STATUS_SUCCESSFUL",
+                })
+            logger.info("All %d workflow(s) completed after %ds", len(operations), elapsed)
+            return {"data": {"operations": synth_ops}}
+
+    logger.warning("Workflow polling timed out after %ds. Done=%d/%d",
+                   timeout, len(completed), len(operations))
+    return {"error": f"Workflow polling timeout after {timeout}s"}
 
 
 async def _poll_operations(
@@ -108,9 +232,18 @@ async def _poll_operations(
     operations: list[dict],
     timeout: int = VIDEO_POLL_TIMEOUT,
 ) -> dict:
-    """Poll check_video_status until all operations complete or timeout."""
+    """Poll until all operations complete or timeout.
+
+    Two polling paths:
+    - OLD schema → check_video_status(operations)
+    - Workflow mode (Low Priority) → poll get_media(primaryMediaId) until ready
+    """
     if not operations:
         return {"error": "No operations to poll"}
+
+    # Workflow-mode polling: poll media endpoint for each primaryMediaId
+    if all(op.get("_workflow_mode") for op in operations):
+        return await _poll_workflows(client, operations, timeout)
 
     poll_interval = VIDEO_POLL_INTERVAL
     elapsed = 0
@@ -315,15 +448,27 @@ class OperationService:
         prompt = await _build_video_prompt(base_prompt, scene, pid)
 
         # Check if already submitted (op_name saved from previous attempt)
+        # OLD schema (Lite/Fast/Ultra): op_name is "models/.../operations/..." → re-poll via check_video_status
+        # NEW schema (Low Priority workflow): op_name is bare UUID → cannot recover (need primary_media_id
+        # which isn't persisted yet); fall through and resubmit (Low Priority is free, duplicate is OK)
         existing_op = None
         if request_id:
             req_row = await crud.get_request(request_id)
             existing_op = req_row.get("request_id") if req_row else None
 
-        if existing_op:
+        # A bare uuid means different things on the two transports. On the
+        # legacy path it is a Low Priority workflow name that cannot be
+        # re-polled, so the retry resubmits. On the batch path it is the
+        # operation id, and looking it up in the project listing is exactly
+        # what the status poll does — resubmitting there would abandon a
+        # running render and pay for a second one.
+        bare_uuid = bool(existing_op and len(existing_op) == 36 and existing_op.count("-") == 4)
+        looks_like_workflow_uuid = bare_uuid and not USE_BATCH_RPC
+        if existing_op and not looks_like_workflow_uuid:
             logger.info("Video gen already submitted (op=%s), re-polling", existing_op[:30])
             operations = [{"operation": {"name": existing_op}, "status": "MEDIA_GENERATION_STATUS_PENDING"}]
             return await _poll_operations(self._client, operations)
+        # else: workflow UUID — fall through and resubmit fresh
 
         submit_result = await self._client.generate_video(
             start_image_media_id=image_media_id,
@@ -336,10 +481,12 @@ class OperationService:
         )
 
         if _is_error(submit_result):
+            logger.error("[DEBUG] Video gen submit_result IS_ERROR: %s", str(submit_result)[:2000])
             return submit_result
 
         operations = _extract_operations(submit_result)
         if not operations:
+            logger.error("[DEBUG] Video gen NO_OPERATIONS submit_result: %s", str(submit_result)[:2000])
             return {"error": "Video gen returned no operations"}
 
         op_name = operations[0].get("operation", {}).get("name", "")
