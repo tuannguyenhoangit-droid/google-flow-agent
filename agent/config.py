@@ -16,9 +16,33 @@ WS_HOST = os.environ.get("WS_HOST", "127.0.0.1")
 WS_PORT = int(os.environ.get("WS_PORT", "9222"))
 
 # ─── Google Flow API ────────────────────────────────────────
+# Legacy REST host. Flow moved to flow.google.com in September 2026 and stopped
+# minting the `Bearer ya29.…` this host needs, so these are only reachable with
+# USE_BATCH_RPC=0 on a browser profile that still has an old token.
 GOOGLE_FLOW_API = "https://aisandbox-pa.googleapis.com"
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "AIzaSyBtrm0o5ab1c-Ec8ZuLcGt3oJAA5VWt3pY")
 RECAPTCHA_SITE_KEY = os.environ.get("RECAPTCHA_SITE_KEY", "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV")
+
+# ─── Flow batchexecute (the current path) ───────────────────
+# Every call is signed in the page with the session cookie plus a per-page `at`
+# token, so the extension runs it inside a signed-in flow.google.com tab. Set
+# USE_BATCH_RPC=0 only to fall back to the dead REST path for a post-mortem.
+USE_BATCH_RPC = os.environ.get("USE_BATCH_RPC", "1") == "1"
+
+# The Flow project every RPC is scoped to. Project creation went with the old
+# labs.google tRPC endpoint, so a project is made once in the Flow UI and its
+# uuid pinned here; POST /api/projects falls back to it when no id is given.
+FLOW_PROJECT_ID = os.environ.get("FLOW_PROJECT_ID", "")
+
+# Capabilities whose payloads were never captured off the new UI (4K upscale,
+# reference-to-video, start+end-frame chaining) fail loudly by default. With
+# this on, the two that have a sane fallback degrade instead: chaining and r2v
+# both drop to plain i2v off the start frame. Upscale has no fallback.
+FLOW_ALLOW_DEGRADED = os.environ.get("FLOW_ALLOW_DEGRADED", "0") == "1"
+
+# The tier no longer picks a model — aspect is its own slot and the model names
+# are fixed — so it is only carried for the DB column and the dashboard.
+DEFAULT_PAYGATE_TIER = os.environ.get("DEFAULT_PAYGATE_TIER", "PAYGATE_TIER_TWO")
 
 # ─── Worker ──────────────────────────────────────────────────
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
@@ -37,6 +61,9 @@ with open(_MODELS_FILE) as _f:
 VIDEO_MODELS = _MODELS["video_models"]
 UPSCALE_MODELS = _MODELS["upscale_models"]
 IMAGE_MODELS = _MODELS["image_models"]
+# Nickname from image_models. The batch path accepts GEM_PIX_2 (Nano Banana Pro)
+# and NARWHAL (Banana 2) and rejects everything else.
+DEFAULT_IMAGE_MODEL = _MODELS.get("default_image_model", "NANO_BANANA_PRO")
 
 # ─── API Endpoints ───────────────────────────────────────────
 ENDPOINTS = {

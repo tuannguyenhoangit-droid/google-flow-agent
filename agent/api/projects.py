@@ -7,7 +7,7 @@ import aiohttp
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from agent.config import BASE_DIR
+from agent.config import BASE_DIR, USE_BATCH_RPC
 from agent.models.project import Project, ProjectCreate, ProjectUpdate
 from agent.models.character import Character
 from agent.sdk.persistence.sqlite_repository import SQLiteRepository
@@ -125,6 +125,24 @@ async def _detect_user_tier(client) -> str:
         return "PAYGATE_TIER_ONE"
 
 
+def _read_flow_project_id(flow_result: dict) -> str:
+    """Pull the project uuid out of whichever transport answered.
+
+    The batch path answers `{"projectId": …}`; the legacy tRPC path buries it
+    under result/data/json/result.
+    """
+    data = flow_result.get("data") or {}
+    if isinstance(data, dict):
+        if isinstance(data.get("projectId"), str):
+            return data["projectId"]
+        try:
+            return data["result"]["data"]["json"]["result"]["projectId"]
+        except (KeyError, TypeError):
+            pass
+    logger.error("Unexpected Flow response: %s", flow_result)
+    raise HTTPException(502, "Could not read a Flow project id from the response")
+
+
 def _get_repo() -> SQLiteRepository:
     return SQLiteRepository()
 
@@ -154,25 +172,24 @@ async def create(body: ProjectCreate):
 
     detected_tier = await _detect_user_tier(client)
 
-    flow_result = await client.create_project(body.name, body.tool_name)
-    if flow_result.get("error"):
-        raise HTTPException(502, f"Flow API error: {flow_result['error']}")
-
-    try:
-        data = flow_result.get("data", {})
-        result = data["result"]["data"]["json"]["result"]
-        flow_project_id = result["projectId"]
-    except (KeyError, TypeError) as e:
-        logger.error("Unexpected Flow response: %s", flow_result)
-        raise HTTPException(502, f"Failed to parse Flow response: {e}")
-
-    logger.info("Flow project created: %s", flow_project_id)
+    # On the batch path Flow no longer creates projects for us — the uuid comes
+    # from the request or from FLOW_PROJECT_ID. The legacy path still mints one.
+    flow_project_id = client.flow_project_id(body.flow_project_id) if USE_BATCH_RPC else None
+    if flow_project_id:
+        logger.info("Flow project reused: %s", flow_project_id)
+    else:
+        flow_result = await client.create_project(body.name, body.tool_name)
+        if flow_result.get("error"):
+            raise HTTPException(502, f"Flow API error: {flow_result['error']}")
+        flow_project_id = _read_flow_project_id(flow_result)
+        logger.info("Flow project created: %s", flow_project_id)
 
     repo = _get_repo()
 
     # Step 2: Create local project with the Flow-assigned ID and detected tier
     create_data = body.model_dump(exclude_none=True)
     create_data.pop("tool_name", None)
+    create_data.pop("flow_project_id", None)
     create_data.pop("style", None)
     characters_input = create_data.pop("characters", None)
 

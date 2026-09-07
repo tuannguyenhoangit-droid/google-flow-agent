@@ -36,6 +36,7 @@ def _reload_config(data: dict):
     config.UPSCALE_MODELS.update(data["upscale_models"])
     config.IMAGE_MODELS.clear()
     config.IMAGE_MODELS.update(data["image_models"])
+    config.DEFAULT_IMAGE_MODEL = data.get("default_image_model", "NANO_BANANA_PRO")
 
 
 @router.get("")
@@ -67,6 +68,9 @@ async def patch_models(body: dict):
     }
     """
     current = _read_models()
+
+    if "default_image_model" in body:
+        current["default_image_model"] = body["default_image_model"]
 
     # Deep merge: only update keys that are provided.
     for section in (

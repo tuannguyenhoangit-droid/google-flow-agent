@@ -40,7 +40,7 @@ def _char_matches(c: dict, name_set: set) -> bool:
 import aiohttp
 
 from agent.db import crud
-from agent.config import VIDEO_POLL_INTERVAL, VIDEO_POLL_TIMEOUT
+from agent.config import USE_BATCH_RPC, VIDEO_POLL_INTERVAL, VIDEO_POLL_TIMEOUT
 from agent.utils.paths import scene_4k_path
 from agent.utils.slugify import slugify
 from agent.worker._parsing import (
@@ -248,6 +248,10 @@ async def _poll_operations(
     poll_interval = VIDEO_POLL_INTERVAL
     elapsed = 0
     current_ops = operations
+    # The batch path attaches the operation's own grumble ("Media not found.")
+    # to a still-pending round. It is a diagnostic, not a verdict — finished
+    # jobs report it too — so it is only worth quoting if we time out.
+    last_complaint = None
 
     while elapsed < timeout:
         await asyncio.sleep(poll_interval)
@@ -269,6 +273,8 @@ async def _poll_operations(
         error_msg = ""
 
         for op in ops:
+            if op.get("complaint"):
+                last_complaint = op["complaint"]
             status = op.get("status", "")
             if status == "MEDIA_GENERATION_STATUS_SUCCESSFUL":
                 continue
@@ -292,7 +298,8 @@ async def _poll_operations(
         done_count = sum(1 for o in ops if o.get("status") == "MEDIA_GENERATION_STATUS_SUCCESSFUL")
         logger.debug("Poll %ds/%ds: %d/%d done", elapsed, timeout, done_count, len(ops))
 
-    return {"error": f"Polling timeout after {timeout}s"}
+    detail = f": {last_complaint}" if last_complaint else ""
+    return {"error": f"Polling timeout after {timeout}s{detail}"}
 
 
 class OperationService:
@@ -449,8 +456,14 @@ class OperationService:
             req_row = await crud.get_request(request_id)
             existing_op = req_row.get("request_id") if req_row else None
 
-        # Heuristic: bare UUID = workflow name → skip shortcut. Slash/colon = old operation path.
-        looks_like_workflow_uuid = bool(existing_op and len(existing_op) == 36 and existing_op.count("-") == 4)
+        # A bare uuid means different things on the two transports. On the
+        # legacy path it is a Low Priority workflow name that cannot be
+        # re-polled, so the retry resubmits. On the batch path it is the
+        # operation id, and looking it up in the project listing is exactly
+        # what the status poll does — resubmitting there would abandon a
+        # running render and pay for a second one.
+        bare_uuid = bool(existing_op and len(existing_op) == 36 and existing_op.count("-") == 4)
+        looks_like_workflow_uuid = bare_uuid and not USE_BATCH_RPC
         if existing_op and not looks_like_workflow_uuid:
             logger.info("Video gen already submitted (op=%s), re-polling", existing_op[:30])
             operations = [{"operation": {"name": existing_op}, "status": "MEDIA_GENERATION_STATUS_PENDING"}]

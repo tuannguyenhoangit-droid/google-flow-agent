@@ -26,10 +26,29 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote
 
+from agent.config import USE_BATCH_RPC
 from agent.services.flow_client import get_flow_client
 from agent.services.headers import random_headers
 
 _MODELS_FILE = Path(__file__).parent.parent / "models.json"
+
+#: Every Omni surface here rides the pre-migration transports — the REST
+#: endpoints on aisandbox-pa and the labs.google tRPC snapshot it polls
+#: through. Flow moved to flow.google.com in September 2026 and stopped
+#: minting the bearer both of those need, and no Omni payload has been
+#: captured off the new frontend, so on the batch path these fail with a
+#: name rather than dying on a 401 five retries deep.
+_UNSUPPORTED_ON_BATCH = (
+    "UNSUPPORTED_ON_BATCH_API: Omni Flash — it speaks the pre-migration REST "
+    "and tRPC endpoints, and no batchexecute payload for it has been captured; "
+    "see docs/CAPTURE.md. Use the Veo path (model_family=veo), or set "
+    "USE_BATCH_RPC=0 on a profile that still holds a bearer token."
+)
+
+
+def _batch_path_blocks_omni() -> dict | None:
+    """The error to return instead of reaching for auth that is gone."""
+    return {"error": _UNSUPPORTED_ON_BATCH} if USE_BATCH_RPC else None
 
 OMNI_FLASH_VALID_DURATIONS = (4, 6, 8, 10)
 OMNI_FLASH_VALID_ASPECTS = {
@@ -211,6 +230,9 @@ async def _submit_omni_frame_video(
     seed: int | None = None,
 ) -> dict:
     """Submit Omni first-frame or First+Last generation."""
+    blocked = _batch_path_blocks_omni()
+    if blocked:
+        return blocked
     _validate_frame_inputs(
         start_image_media_id,
         end_image_media_id,
@@ -330,6 +352,9 @@ async def generate_omni_flash_video(
     the workflow names and primary media IDs required by the Omni polling path.
     Do not feed Omni operation handles to ``check_video_status``.
     """
+    blocked = _batch_path_blocks_omni()
+    if blocked:
+        return blocked
     refs = _validate_reference_inputs(reference_media_ids, duration_s, aspect_ratio)
     model_key = _load_model_key(duration_s, mode="reference_to_video")
     client = get_flow_client()
@@ -384,6 +409,9 @@ async def check_omni_flash_status(
     ``flow.projectInitialData`` tRPC response. The old ``/v1/media`` transport
     currently returns ``INVALID_ARGUMENT`` for these workflow media IDs.
     """
+    blocked = _batch_path_blocks_omni()
+    if blocked:
+        return blocked
     normalized = []
     for workflow in workflows or []:
         item = _normalize_workflow(workflow)

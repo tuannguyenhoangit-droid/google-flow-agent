@@ -18,6 +18,10 @@ class ProjectCreate(BaseModel):
     language: str = "en"
     user_paygate_tier: PaygateTier = "PAYGATE_TIER_ONE"
     tool_name: str = "PINHOLE"
+    # Flow stopped letting clients create projects in the September 2026
+    # migration, so a project is made once in the Flow UI and its uuid supplied
+    # here. Falls back to FLOW_PROJECT_ID when omitted.
+    flow_project_id: Optional[str] = None
     material: str = Field("realistic", pattern=r"^[a-z0-9][a-z0-9_]{1,63}$")  # material ID from GET /api/materials
     style: Optional[str] = None  # deprecated: use material instead; "3D"→"3d_pixar", "photorealistic"→"realistic"
     allow_music: bool = False  # when True, skip "no background music" suffix in video prompts

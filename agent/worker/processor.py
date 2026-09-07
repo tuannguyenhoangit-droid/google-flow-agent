@@ -444,6 +444,14 @@ async def _handle_failure(rid: str, req: dict, result: dict, retry_after: dict =
 
     error_lower = str(error_msg).lower()
 
+    # A capability the batch path does not have, or a missing Flow project, is
+    # a configuration answer — not something a retry can reach. Fail it once.
+    if "unsupported_on_batch_api" in error_lower or "no_flow_project" in error_lower:
+        await crud.update_request(rid, status="FAILED", error_message=str(error_msg))
+        await _mark_scene_failed(req)
+        logger.error("Request %s FAILED (not retryable): %s", rid[:8], error_msg)
+        return
+
     # WS transient errors (extension disconnect/reconnect): retry without incrementing count
     if "extension reconnected" in error_lower or "extension disconnected" in error_lower or "extension not connected" in error_lower:
         await crud.update_request(rid, status="PENDING", error_message=str(error_msg))
