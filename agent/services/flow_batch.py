@@ -40,6 +40,7 @@ RPC_OPERATION = "jwpduf"
 RPC_PROJECT_MEDIA = "Zzl0ze"
 RPC_MEDIA = "as29s"
 RPC_UPLOAD_IMAGE = "maseQ"
+RPC_UPSCALE = "p0UkFb"
 
 CAPTCHA_IMAGE = "IMAGE_GENERATION"
 CAPTCHA_VIDEO = "VIDEO_GENERATION"
@@ -357,6 +358,23 @@ def video_request(prompt: str, project_id: str, source_media_id: str,
     return build_envelope(RPC_GEN_VIDEO, inner)
 
 
+def upscale_request(media_id: str, project_id: str,
+                    aspect: Any = VIDEO_ASPECT_LANDSCAPE,
+                    model: str = "veo_3_1_upsampler_1080p") -> str:
+    """Build Flow's migrated high-resolution download request (RPC p0UkFb)."""
+    item = [None] * 32
+    item[0] = [None, media_id]
+    item[2] = 1
+    item[4] = [None, str(uuid.uuid4()), None, None, _client_uuid()]
+    item[6] = resolve_video_aspect(aspect)
+    item[31] = model
+    return build_envelope(RPC_UPSCALE, [
+        [item],
+        _context(project_id),
+        [_client_uuid()],
+    ])
+
+
 def upload_request(image_b64: str, project_id: str, mime_type: str = "image/jpeg",
                    file_name: str = "upload.jpg") -> str:
     """Put a local image into the project so it can be used as a reference.
@@ -427,6 +445,14 @@ def read_uploaded_media_id(payload: Any) -> str:
     if not isinstance(media_id, str) or not media_id:
         raise FlowBatchError("upload response carried no media id")
     return media_id
+
+
+def read_upscaled_media_id(payload: Any) -> str:
+    """Return the media id created by the p0UkFb upscale submit."""
+    for text in _walk_strings(payload):
+        if isinstance(text, str) and text.endswith("_upsampled"):
+            return text
+    raise FlowBatchError("upscale response carried no upsampled media id")
 
 
 def read_operation(payload: Any) -> Operation:

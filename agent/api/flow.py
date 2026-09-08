@@ -64,6 +64,7 @@ class UpscaleVideoRequest(BaseModel):
     scene_id: str
     aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT"
     resolution: str = "VIDEO_RESOLUTION_4K"
+    project_id: Optional[str] = None
 
 
 class UploadImageRequest(BaseModel):

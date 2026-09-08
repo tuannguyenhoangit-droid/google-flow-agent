@@ -158,11 +158,26 @@ class TestGenerateVideo:
         payload = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])
         assert payload[0][0][4][1] == "ref-a"
 
-    async def test_upscale_is_unported_and_has_no_fallback(self, client, monkeypatch):
-        import agent.services.flow_client as module
-        monkeypatch.setattr(module, "FLOW_ALLOW_DEGRADED", True)
-        result = await client.upscale_video(MEDIA, "scene-1")
-        assert "UNSUPPORTED_ON_BATCH_API" in result["error"]
+
+
+class TestUpscaleVideo:
+    async def test_1080p_submit_returns_a_pollable_workflow(self, client):
+        upscaled = MEDIA + "_upsampled"
+        client.responses[fb.RPC_UPSCALE] = {
+            "data": envelope(fb.RPC_UPSCALE, [[[[upscaled], "", None, None, 1]]])
+        }
+
+        result = await client.upscale_video(
+            MEDIA,
+            "scene-1",
+            aspect_ratio="VIDEO_ASPECT_RATIO_LANDSCAPE",
+            resolution="VIDEO_RESOLUTION_1080P",
+        )
+        workflow = result["data"]["workflows"][0]
+        assert workflow["primary_media_id"] == upscaled
+        assert workflow["project_id"] == PROJECT
+        assert client.calls[0]["rpcid"] == fb.RPC_UPSCALE
+        assert client.calls[0]["captcha"] == fb.CAPTCHA_VIDEO
 
 
 class TestCheckVideoStatus:
