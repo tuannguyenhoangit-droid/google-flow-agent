@@ -17,6 +17,7 @@ from agent.api.videos import router as videos_router
 from agent.api.scenes import router as scenes_router
 from agent.api.requests import router as requests_router
 from agent.api.flow import router as flow_router
+from agent.api.upscale_status import router as upscale_status_router
 from agent.api.reviews import router as reviews_router
 from agent.api.tts import router as tts_router
 from agent.api.materials import router as materials_router
@@ -128,6 +129,7 @@ app.include_router(videos_router, prefix="/api")
 app.include_router(scenes_router, prefix="/api")
 app.include_router(requests_router, prefix="/api")
 app.include_router(flow_router, prefix="/api")
+app.include_router(upscale_status_router, prefix="/api")
 app.include_router(reviews_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
 app.include_router(materials_router, prefix="/api")

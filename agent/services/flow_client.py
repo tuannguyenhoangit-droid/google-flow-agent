@@ -694,14 +694,33 @@ class FlowClient:
 
     async def upscale_video(self, media_id: str, scene_id: str,
                              aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT",
-                             resolution: str = "VIDEO_RESOLUTION_4K") -> dict:
-        """Upscale a video."""
+                             resolution: str = "VIDEO_RESOLUTION_4K",
+                             project_id: str | None = None) -> dict:
+        """Upscale/export a video using Flow's migrated p0UkFb RPC."""
         if not USE_BATCH_RPC:
             return await self._legacy_upscale_video(media_id, scene_id, aspect_ratio, resolution)
-        return {"error": _unsupported(
-            "video upscale",
-            "no upsampler rpc appears in the new frontend's captures",
-        )}
+
+        model = UPSCALE_MODELS.get(resolution)
+        if not model:
+            return {"status": 400, "error": f"Unsupported upscale resolution: {resolution}"}
+        try:
+            pid = self._batch_project_id(project_id or "")
+            freq = fb.upscale_request(media_id, pid, aspect=aspect_ratio, model=model)
+            payload = await self._batch_payload(
+                fb.RPC_UPSCALE, freq, fb.CAPTCHA_VIDEO, timeout=120)
+            upscaled_media_id = fb.read_upscaled_media_id(payload)
+        except Exception as e:
+            return _batch_error(e)
+
+        workflow = {
+            "name": upscaled_media_id,
+            "primary_media_id": upscaled_media_id,
+            "project_id": pid,
+        }
+        return {"status": 200, "data": {
+            "media": [{"name": upscaled_media_id}],
+            "workflows": [workflow],
+        }}
 
     async def check_video_status(self, operations: list[dict]) -> dict:
         """One poll round for each submitted operation.
