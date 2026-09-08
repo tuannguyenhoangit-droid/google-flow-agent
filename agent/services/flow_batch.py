@@ -36,6 +36,7 @@ MEDIA_HOST = "flow-content.google"
 
 RPC_GEN_IMAGE = "ogiZ0b"
 RPC_GEN_VIDEO = "eb1hJf"
+RPC_GEN_VIDEO_TEXT = "YhhmEf"
 RPC_OPERATION = "jwpduf"
 RPC_PROJECT_MEDIA = "Zzl0ze"
 RPC_MEDIA = "as29s"
@@ -357,6 +358,24 @@ def video_request(prompt: str, project_id: str, source_media_id: str,
     return build_envelope(RPC_GEN_VIDEO, inner)
 
 
+def text_video_request(prompt: str, project_id: str,
+                       aspect: Any = VIDEO_ASPECT_LANDSCAPE,
+                       model: str = "abra_t2v_4s") -> str:
+    """Build the migrated text-to-video submit (YhhmEf)."""
+    request = [
+        [None, None, [[[prompt]]]],
+        model,
+        resolve_video_aspect(aspect),
+        None,
+        [None, None, None, None, _client_uuid(), _client_uuid()],
+    ]
+    return build_envelope(RPC_GEN_VIDEO_TEXT, [
+        [request],
+        _context(project_id),
+        [_client_uuid(), 1],
+    ])
+
+
 def upload_request(image_b64: str, project_id: str, mime_type: str = "image/jpeg",
                    file_name: str = "upload.jpg") -> str:
     """Put a local image into the project so it can be used as a reference.
@@ -427,6 +446,26 @@ def read_uploaded_media_id(payload: Any) -> str:
     if not isinstance(media_id, str) or not media_id:
         raise FlowBatchError("upload response carried no media id")
     return media_id
+
+
+def read_text_video_submit(payload: Any) -> dict:
+    """Read YhhmEf's submitted media/workflow record."""
+    records = payload[3] if isinstance(payload, list) and len(payload) > 3 else None
+    record = records[0] if isinstance(records, list) and records else None
+    if not isinstance(record, list) or not record:
+        raise FlowBatchError("text-video submit carried no generation record")
+    media_id = record[0] if len(record) > 0 else None
+    project_id = record[1] if len(record) > 1 else None
+    workflow_id = record[2] if len(record) > 2 else None
+    status = record[3] if len(record) > 3 else None
+    if not isinstance(media_id, str) or not media_id:
+        raise FlowBatchError("text-video submit carried no media id")
+    return {
+        "media_id": media_id,
+        "project_id": project_id if isinstance(project_id, str) else None,
+        "workflow_id": workflow_id if isinstance(workflow_id, str) else media_id,
+        "status": status if isinstance(status, str) else None,
+    }
 
 
 def read_operation(payload: Any) -> Operation:

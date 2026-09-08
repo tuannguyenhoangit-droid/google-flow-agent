@@ -121,6 +121,22 @@ class TestVideoRequest:
         crop = [None, 0.1, 1, 0.9]
         assert inner(fb.video_request("go", self.PID, "mid", crop=crop))[0][0][4][5] == crop
 
+    def test_text_video_matches_the_captured_yhhmef_shape(self):
+        payload = inner(fb.text_video_request(
+            "a boat", self.PID,
+            aspect="VIDEO_ASPECT_RATIO_LANDSCAPE",
+            model="abra_t2v_4s",
+        ))
+        request = payload[0][0]
+        assert request[0] == [None, None, [[["a boat"]]]]
+        assert request[1] == "abra_t2v_4s"
+        assert request[2] == fb.VIDEO_ASPECT_LANDSCAPE
+        assert request[3] is None
+        assert len(request[4]) == 6
+        assert payload[1][5] == self.PID
+        assert payload[2][1] == 1
+        assert fb.CAPTCHA_SLOT in json.dumps(payload)
+
 
 class TestReaders:
     OP = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -134,6 +150,15 @@ class TestReaders:
     def test_a_repeated_url_is_not_a_second_variant(self):
         url = f"https://{fb.MEDIA_HOST}/image/{self.MID}?sig=x"
         assert len(fb.read_images([url, url])) == 1
+
+    def test_text_video_submit_reads_media_and_workflow_ids(self):
+        payload = [None, 10, [], [[self.MID, "project-1", self.OP, "CAE"]]]
+        assert fb.read_text_video_submit(payload) == {
+            "media_id": self.MID,
+            "project_id": "project-1",
+            "workflow_id": self.OP,
+            "status": "CAE",
+        }
 
     def test_operation_reads_the_id_and_status(self):
         op = fb.read_operation([None, 50, [[self.OP, "proj", "scene", "CAE"]]])

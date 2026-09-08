@@ -254,7 +254,8 @@ Three capabilities have no captured payload, so they fail with
 | 4K/1080p upscale (`/fk-pipeline` last step) | unported | none — keep the 1080p render |
 | Reference-to-video (r2v) | unported | `FLOW_ALLOW_DEGRADED=1` → i2v off the first reference |
 | Start+end-frame chaining (`/fk-gen-chain-videos`) | unported | `FLOW_ALLOW_DEGRADED=1` → i2v off the start frame |
-| Omni Flash (`model_family=omni_flash`) | unported | use `model_family=veo` |
+| Omni Flash text-to-video | ported | `POST /api/flow/generate-video-omni-text` (4/6/8/10s) |
+| Omni Flash frame/reference modes | unported | use Veo or text-to-video until their batch payloads are captured |
 
 Restoring one starts with a capture, not a guess: [`docs/CAPTURE.md`](docs/CAPTURE.md).
 
