@@ -40,6 +40,7 @@ RPC_OPERATION = "jwpduf"
 RPC_PROJECT_MEDIA = "Zzl0ze"
 RPC_MEDIA = "as29s"
 RPC_UPLOAD_IMAGE = "maseQ"
+RPC_UPSCALE_IMAGE = "SPrCad"
 
 CAPTCHA_IMAGE = "IMAGE_GENERATION"
 CAPTCHA_VIDEO = "VIDEO_GENERATION"
@@ -49,15 +50,21 @@ CAPTCHA_VIDEO = "VIDEO_GENERATION"
 #: happen in the page, moments before the request leaves.
 CAPTCHA_SLOT = "__CAPTCHA__"
 
-#: Wire names this path accepts. Everything else is rejected outright by Flow.
-#: ``GEM_PIX_2`` is Nano Banana Pro, ``NARWHAL`` is Banana 2. Flow Kit uses Pro
-#: by default (see agent/models.json), which is also what the new path defaults
-#: to; a caller that wants Banana 2 has to name it.
-IMAGE_MODELS = {"GEM_PIX_2", "NARWHAL"}
+#: Current image model wire ids observed in the Flow frontend. Unknown future
+#: ids are accepted by ``resolve_image_model`` instead of being silently
+#: replaced by the default, so callers can opt into a newly exposed model
+#: before Flow Kit itself ships another release.
+IMAGE_MODELS = {"GEM_PIX_2", "NARWHAL", "HARBOR_SEAL"}
 IMAGE_MODEL = "GEM_PIX_2"
 
-#: The nicknames models.json speaks, resolved to wire names.
-IMAGE_MODEL_BY_NICKNAME = {"NANO_BANANA_PRO": "GEM_PIX_2", "NANO_BANANA_2": "NARWHAL"}
+#: Friendly aliases. Exact Flow wire ids work too.
+IMAGE_MODEL_BY_NICKNAME = {
+    "NANO_BANANA_PRO": "GEM_PIX_2",
+    "NANO_BANANA_2": "NARWHAL",
+    "NANO_BANANA_2_LITE": "HARBOR_SEAL",
+    "NANO_BANANA_LITE": "HARBOR_SEAL",
+}
+IMAGE_MODEL_ID_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,95}$")
 
 #: Image aspect ratios, measured by generating one of each and reading the
 #: JPEG header. This slot was mistaken for a variant count at first — 1 means
@@ -73,8 +80,16 @@ ASPECT_BY_NAME = {
     "IMAGE_ASPECT_RATIO_SQUARE": ASPECT_SQUARE,
     "IMAGE_ASPECT_RATIO_PORTRAIT": ASPECT_PORTRAIT,
     "IMAGE_ASPECT_RATIO_LANDSCAPE": ASPECT_LANDSCAPE,
+    # Current spelling plus the old Flow Kit alias for compatibility.
+    "IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR": ASPECT_PORTRAIT_4_3,
     "IMAGE_ASPECT_RATIO_PORTRAIT_FOUR_THREE": ASPECT_PORTRAIT_4_3,
     "IMAGE_ASPECT_RATIO_LANDSCAPE_FOUR_THREE": ASPECT_LANDSCAPE_4_3,
+    # Friendly API aliases.
+    "1:1": ASPECT_SQUARE,
+    "9:16": ASPECT_PORTRAIT,
+    "16:9": ASPECT_LANDSCAPE,
+    "3:4": ASPECT_PORTRAIT_4_3,
+    "4:3": ASPECT_LANDSCAPE_4_3,
 }
 
 #: Video models this path accepts. The REST-era map was keyed by
@@ -117,10 +132,11 @@ SURFACE_ID = 22
 #: reframed by hand: a hair inside the edges, spanning 128/129 of the frame.
 FULL_FRAME_CROP = [None, 0.0038759689922481244, 1, 0.9961240310077519]
 
-#: A reference image, as the UI sends it: the media id FIRST and a type flag
-#: four slots later. Probing never found this — the id sat in the wrong
-#: position, the payload was accepted, and the picture quietly ignored it.
+#: Image inputs put the media id first and the input type four slots later.
+#: Type 1 is a reference; type 2 is the image being edited (BASE_IMAGE).
 REF_TYPE_IMAGE = 1
+BASE_TYPE_IMAGE = 2
+IMAGE_UPSCALE_RESOLUTIONS = {"2K": 1, "4K": 2}
 
 
 class RpcError(RuntimeError):
@@ -180,12 +196,18 @@ class MediaUrls:
 # ── model / aspect resolvers ─────────────────────────────────────────────────
 
 def resolve_image_model(key: Optional[str]) -> str:
-    """Nickname or wire name in, wire name out; anything unknown coerces."""
+    """Nickname or wire id in, wire id out.
+
+    Flow can add image models independently of Flow Kit releases. A
+    syntactically valid, previously unseen wire id therefore passes through
+    unchanged instead of being silently replaced by the default model.
+    """
     if isinstance(key, str):
-        if key in IMAGE_MODEL_BY_NICKNAME:
-            return IMAGE_MODEL_BY_NICKNAME[key]
-        if key in IMAGE_MODELS:
-            return key
+        normalized = key.strip().upper().replace("-", "_")
+        if normalized in IMAGE_MODEL_BY_NICKNAME:
+            return IMAGE_MODEL_BY_NICKNAME[normalized]
+        if IMAGE_MODEL_ID_RE.fullmatch(normalized):
+            return normalized
     return IMAGE_MODEL
 
 
@@ -211,8 +233,10 @@ def resolve_video_model(key: Optional[str]) -> str:
 
 
 def resolve_aspect(aspect: Any) -> int:
-    """Take either the wire value or the REST-era name."""
+    """Take a current/legacy wire name, friendly ratio, or integer 1-5."""
     if isinstance(aspect, int):
+        if aspect not in (1, 2, 3, 4, 5):
+            raise ValueError(f"image aspect must be 1-5, got {aspect}")
         return aspect
     try:
         return ASPECT_BY_NAME[aspect]
@@ -313,15 +337,24 @@ def _context(project_id: str) -> list:
             [CAPTCHA_SLOT, 1]]
 
 
+def _image_input(media_id: str, input_type: int) -> list:
+    return [media_id, None, None, None, input_type]
+
+
 def _reference(media_id: str) -> list:
-    return [media_id, None, None, None, REF_TYPE_IMAGE]
+    return _image_input(media_id, REF_TYPE_IMAGE)
+
+
+def _base_image(media_id: str) -> list:
+    return _image_input(media_id, BASE_TYPE_IMAGE)
 
 
 def image_request(prompt: str, project_id: str, count: int = 1,
                   aspect: Any = ASPECT_SQUARE, seed: Optional[int] = None,
                   prompts: Optional[list[str]] = None,
                   model: str = IMAGE_MODEL,
-                  ref_media_ids: Optional[list[str]] = None) -> str:
+                  ref_media_ids: Optional[list[str]] = None,
+                  base_media_id: Optional[str] = None) -> str:
     """One request item per variant, exactly as the REST payload did it.
 
     There is no "how many" field: Flow returns one image per item in the list,
@@ -329,17 +362,37 @@ def image_request(prompt: str, project_id: str, count: int = 1,
     the result on images already in the project — this is what keeps a character
     the same person from beat to beat.
     """
+    if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 4:
+        raise ValueError("image count must be an integer from 1 to 4")
     ratio = resolve_aspect(aspect)
+    resolved_model = resolve_image_model(model)
     base = seed if seed is not None else random.randint(1, 10**9)
     items = []
-    for index in range(max(1, count)):
+    for index in range(count):
         text = prompts[index] if prompts and index < len(prompts) else prompt
-        refs = [_reference(mid) for mid in (ref_media_ids or [])] or None
-        items.append([None, None, refs, base + index * 9973, ratio, model, None,
-                      _context(project_id), [[[text]]], None, None, None,
-                      _client_uuid(), _client_uuid()])
+        image_inputs = []
+        if base_media_id:
+            image_inputs.append(_base_image(base_media_id))
+        image_inputs.extend(
+            _reference(mid) for mid in (ref_media_ids or []) if mid != base_media_id
+        )
+        items.append([None, None, image_inputs or None, base + index * 9973, ratio,
+                      resolved_model, None, _context(project_id), [[[text]]],
+                      None, None, None, _client_uuid(), _client_uuid()])
     return build_envelope(RPC_GEN_IMAGE, [None, items, 1, _context(project_id),
                                           [_client_uuid()]])
+
+
+def image_upscale_request(media_id: str, resolution: str = "2K") -> str:
+    """Build the current FlowService.UpsampleImage request (RPC SPrCad)."""
+    key = str(resolution).strip().upper()
+    if key.startswith("UPSAMPLE_IMAGE_RESOLUTION_"):
+        key = key.removeprefix("UPSAMPLE_IMAGE_RESOLUTION_")
+    try:
+        code = IMAGE_UPSCALE_RESOLUTIONS[key]
+    except KeyError:
+        raise ValueError("image upscale resolution must be 2K or 4K") from None
+    return build_envelope(RPC_UPSCALE_IMAGE, [media_id, code, _context(None)])
 
 
 def video_request(prompt: str, project_id: str, source_media_id: str,
@@ -427,6 +480,14 @@ def read_uploaded_media_id(payload: Any) -> str:
     if not isinstance(media_id, str) or not media_id:
         raise FlowBatchError("upload response carried no media id")
     return media_id
+
+
+def read_upscaled_image(payload: Any) -> str:
+    """Return the base64 image body from FlowService.UpsampleImage."""
+    encoded = payload[1] if isinstance(payload, list) and len(payload) > 1 else None
+    if not isinstance(encoded, str) or len(encoded) < 100:
+        raise FlowBatchError("image upscale response carried no encoded image")
+    return encoded
 
 
 def read_operation(payload: Any) -> Operation:

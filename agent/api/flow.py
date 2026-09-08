@@ -1,6 +1,6 @@
 """Direct Flow API endpoints — for manual operations outside the queue."""
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Response
+from pydantic import BaseModel, Field
 from typing import Literal, Optional
 
 from agent.config import USE_BATCH_RPC, FLOW_PROJECT_ID, FLOW_ALLOW_DEGRADED
@@ -20,6 +20,10 @@ class GenerateImageRequest(BaseModel):
     project_id: str
     aspect_ratio: str = "IMAGE_ASPECT_RATIO_PORTRAIT"
     user_paygate_tier: str = "PAYGATE_TIER_ONE"
+    image_model: Optional[str] = None
+    count: int = Field(default=1, ge=1, le=4)
+    seed: Optional[int] = Field(default=None, ge=1, le=1_000_000_000)
+    reference_media_ids: Optional[list[str]] = None
     character_media_ids: Optional[list[str]] = None
 
 
@@ -94,6 +98,16 @@ class EditImageRequest(BaseModel):
     project_id: str
     aspect_ratio: str = "IMAGE_ASPECT_RATIO_PORTRAIT"
     user_paygate_tier: str = "PAYGATE_TIER_ONE"
+    image_model: Optional[str] = None
+    count: int = Field(default=1, ge=1, le=4)
+    seed: Optional[int] = Field(default=None, ge=1, le=1_000_000_000)
+    reference_media_ids: Optional[list[str]] = None
+
+
+class UpscaleImageRequest(BaseModel):
+    media_id: str
+    project_id: str
+    quality: Literal["2k", "4k"] = "2k"
 
 
 @router.get("/status")
@@ -127,11 +141,14 @@ async def get_credits():
 
 @router.post("/generate-image")
 async def generate_image(body: GenerateImageRequest):
-    """Generate image directly (bypasses queue)."""
+    """Generate 1-4 images with an explicit Flow image model."""
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
-    result = await client.generate_images(**body.model_dump())
+    data = body.model_dump(exclude={"reference_media_ids"})
+    refs = list(dict.fromkeys((body.reference_media_ids or []) + (body.character_media_ids or [])))
+    data["character_media_ids"] = refs or None
+    result = await client.generate_images(**data)
     if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
         raise HTTPException(result.get("status", 502), result.get("error", result.get("data")))
     return result.get("data", result)
@@ -335,18 +352,57 @@ async def get_media(media_id: str):
 
 @router.post("/edit-image")
 async def edit_image(body: EditImageRequest):
-    """Edit an existing image using IMAGE_INPUT_TYPE_BASE_IMAGE (bypasses queue)."""
+    """Edit an existing image using the current Flow BASE_IMAGE wire input."""
     client = get_flow_client()
     if not client.connected:
         raise HTTPException(503, "Extension not connected")
     result = await client.edit_image(
-        body.prompt, body.source_media_id, body.project_id,
+        body.prompt,
+        body.source_media_id,
+        body.project_id,
         aspect_ratio=body.aspect_ratio,
         user_paygate_tier=body.user_paygate_tier,
+        character_media_ids=body.reference_media_ids,
+        image_model=body.image_model,
+        count=body.count,
+        seed=body.seed,
     )
     if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
         raise HTTPException(result.get("status", 502), result.get("error", result.get("data")))
     return result.get("data", result)
+
+
+@router.post("/export-image")
+@router.post("/upscale-image", include_in_schema=False)
+async def export_image(body: UpscaleImageRequest):
+    """Download a generated Flow image at 2K (or plan-gated 4K)."""
+    import base64
+    import binascii
+
+    client = get_flow_client()
+    if not client.connected:
+        raise HTTPException(503, "Extension not connected")
+    result = await client.upscale_image(
+        body.media_id,
+        body.project_id,
+        resolution=body.quality.upper(),
+    )
+    if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
+        raise HTTPException(result.get("status", 502), result.get("error", result.get("data")))
+    data = result.get("data", result)
+    try:
+        content = base64.b64decode(data["encodedImage"], validate=True)
+    except (KeyError, TypeError, binascii.Error) as exc:
+        raise HTTPException(502, "Flow image upscale returned invalid image data") from exc
+    quality = body.quality.lower()
+    return Response(
+        content=content,
+        media_type=data.get("contentType", "image/jpeg"),
+        headers={
+            "Content-Disposition": f'attachment; filename="flow-{body.media_id}-{quality}.jpg"',
+            "X-Flow-Image-Quality": quality,
+        },
+    )
 
 
 @router.post("/upload-image")

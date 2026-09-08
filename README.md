@@ -244,6 +244,14 @@ You can also pass `flow_project_id` per project on `POST /api/projects`.
 | `FLOW_ALLOW_DEGRADED` | `0` | `1` lets scene chaining and r2v fall back to plain i2v instead of failing. |
 | `DEFAULT_PAYGATE_TIER` | `PAYGATE_TIER_TWO` | Carried for the DB and dashboard; no longer selects a model. |
 
+### Image API
+
+The migrated image path supports Nano Banana Pro, Nano Banana 2 and Nano Banana
+2 Lite, all five current aspect ratios, 1-4 outputs, true base-image editing and
+native 2K image export. Exact future Flow image model wire ids pass through
+without being silently replaced by the default model. See
+[`docs/IMAGE_API.md`](docs/IMAGE_API.md).
+
 ### What does not work on the new API yet
 
 Three capabilities have no captured payload, so they fail with

@@ -61,8 +61,9 @@ with open(_MODELS_FILE) as _f:
 VIDEO_MODELS = _MODELS["video_models"]
 UPSCALE_MODELS = _MODELS["upscale_models"]
 IMAGE_MODELS = _MODELS["image_models"]
-# Nickname from image_models. The batch path accepts GEM_PIX_2 (Nano Banana Pro)
-# and NARWHAL (Banana 2) and rejects everything else.
+# Nickname from image_models. Known aliases live in models.json, while the
+# batch path also accepts syntactically valid Flow wire model ids directly so
+# newly introduced image models do not require a Flow Kit release.
 DEFAULT_IMAGE_MODEL = _MODELS.get("default_image_model", "NANO_BANANA_PRO")
 
 # ─── API Endpoints ───────────────────────────────────────────

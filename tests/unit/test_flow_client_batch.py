@@ -72,6 +72,26 @@ class TestGenerateImages:
         assert item[2] == [["ref-a", None, None, None, fb.REF_TYPE_IMAGE],
                            ["ref-b", None, None, None, fb.REF_TYPE_IMAGE]]
 
+    async def test_explicit_model_and_count_reach_the_batch_wire(self, client):
+        second = "12345678-1234-1234-1234-1234567890ac"
+        client.responses[fb.RPC_GEN_IMAGE] = {
+            "data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL], [IMAGE_URL.replace(MEDIA, second)]])
+        }
+        result = await client.generate_images(
+            "a cat", PROJECT, image_model="HARBOR_SEAL", count=2, seed=100,
+        )
+        items = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])[1]
+        assert len(items) == 2
+        assert [item[5] for item in items] == ["HARBOR_SEAL", "HARBOR_SEAL"]
+        assert [item[3] for item in items] == [100, 100 + 9973]
+        assert len(result["data"]["media"]) == 2
+
+    async def test_future_wire_model_is_not_silently_replaced(self, client):
+        client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}
+        await client.generate_images("a cat", PROJECT, image_model="FUTURE_BANANA_3")
+        item = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])[1][0]
+        assert item[5] == "FUTURE_BANANA_3"
+
     async def test_a_project_less_call_falls_back_to_the_pinned_project(self, client):
         client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}
         await client.generate_images("a cat", "0")
@@ -96,19 +116,39 @@ class TestGenerateImages:
 
 
 class TestEditImage:
-    async def test_the_source_leads_the_reference_list(self, client):
+    async def test_source_is_base_image_and_extra_inputs_are_references(self, client):
         client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}
         await client.edit_image("redraw", "src-1", PROJECT, character_media_ids=["ref-a"])
 
         item = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])[1][0]
-        assert [ref[0] for ref in item[2]] == ["src-1", "ref-a"]
+        assert item[2] == [
+            ["src-1", None, None, None, fb.BASE_TYPE_IMAGE],
+            ["ref-a", None, None, None, fb.REF_TYPE_IMAGE],
+        ]
 
-    async def test_the_source_is_not_repeated_when_it_is_also_a_character(self, client):
+    async def test_source_is_not_repeated_when_also_supplied_as_reference(self, client):
         client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}
         await client.edit_image("redraw", "src-1", PROJECT, character_media_ids=["src-1", "ref-a"])
 
         item = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])[1][0]
         assert [ref[0] for ref in item[2]] == ["src-1", "ref-a"]
+        assert [ref[4] for ref in item[2]] == [fb.BASE_TYPE_IMAGE, fb.REF_TYPE_IMAGE]
+
+
+class TestUpscaleImage:
+    async def test_2k_upscale_uses_sprcad_and_returns_encoded_image(self, client):
+        encoded = "A" * 200
+        client.responses[fb.RPC_UPSCALE_IMAGE] = {
+            "data": envelope(fb.RPC_UPSCALE_IMAGE, [["media-record"], encoded])
+        }
+        result = await client.upscale_image(MEDIA, PROJECT, "2K")
+        assert result["data"]["encodedImage"] == encoded
+        assert result["data"]["resolution"] == "2K"
+        assert client.calls[0]["rpcid"] == fb.RPC_UPSCALE_IMAGE
+        assert client.calls[0]["captcha"] == fb.CAPTCHA_IMAGE
+        payload = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])
+        assert payload[0] == MEDIA
+        assert payload[1] == 1
 
 
 class TestGenerateVideo:

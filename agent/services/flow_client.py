@@ -572,7 +572,10 @@ class FlowClient:
                                aspect_ratio: str = "IMAGE_ASPECT_RATIO_PORTRAIT",
                                user_paygate_tier: str = "PAYGATE_TIER_TWO",
                                character_media_ids: list[str] = None,
-                               image_model: str = None) -> dict:
+                               image_model: str = None,
+                               count: int = 1,
+                               seed: int | None = None,
+                               base_media_id: str | None = None) -> dict:
         """Generate image(s).
 
         ``character_media_ids`` are attached as reference images, which is what
@@ -587,9 +590,10 @@ class FlowClient:
         try:
             pid = self._batch_project_id(project_id)
             freq = fb.image_request(
-                prompt, pid, count=1, aspect=aspect_ratio,
+                prompt, pid, count=count, aspect=aspect_ratio, seed=seed,
                 model=self._batch_image_model(image_model),
                 ref_media_ids=list(character_media_ids or []) or None,
+                base_media_id=base_media_id,
             )
             payload = await self._batch_payload(fb.RPC_GEN_IMAGE, freq, fb.CAPTCHA_IMAGE)
         except Exception as e:
@@ -604,28 +608,61 @@ class FlowClient:
                           project_id: str,
                           aspect_ratio: str = "IMAGE_ASPECT_RATIO_PORTRAIT",
                           user_paygate_tier: str = "PAYGATE_TIER_ONE",
-                          character_media_ids: list[str] = None) -> dict:
-        """Regenerate from an existing image plus any entity references.
+                          character_media_ids: list[str] = None,
+                          image_model: str = None,
+                          count: int = 1,
+                          seed: int | None = None) -> dict:
+        """Edit an image with the source encoded as Flow's BASE_IMAGE input.
 
-        The REST path had a dedicated base-image input type; the new payload's
-        reference slot was captured but a base-image variant of it was not, so
-        here the source rides in as the first reference. In practice that
-        conditions the result on the source rather than editing it in place —
-        good enough for continuation scenes, not identical to the old edit.
-        Capturing the real slot is the fix; see docs/CAPTURE.md.
+        Additional references remain REFERENCE inputs. Sending the source as a
+        generic reference conditions a fresh generation; BASE_IMAGE is the wire
+        shape the current Flow editor uses for an actual image edit/refine.
         """
         if not USE_BATCH_RPC:
             return await self._legacy_edit_image(
                 prompt, source_media_id, project_id, aspect_ratio,
                 user_paygate_tier, character_media_ids)
 
-        refs = [source_media_id] + [
-            mid for mid in (character_media_ids or []) if mid != source_media_id
-        ]
+        refs = [mid for mid in (character_media_ids or []) if mid != source_media_id]
         return await self.generate_images(
-            prompt=prompt, project_id=project_id, aspect_ratio=aspect_ratio,
-            user_paygate_tier=user_paygate_tier, character_media_ids=refs,
+            prompt=prompt,
+            project_id=project_id,
+            aspect_ratio=aspect_ratio,
+            user_paygate_tier=user_paygate_tier,
+            character_media_ids=refs,
+            image_model=image_model,
+            count=count,
+            seed=seed,
+            base_media_id=source_media_id,
         )
+
+    async def upscale_image(self, media_id: str, project_id: str,
+                            resolution: str = "2K") -> dict:
+        """Return Flow's synchronous 2K/4K image upscale as base64 JPEG data."""
+        if not USE_BATCH_RPC:
+            return {"status": 400, "error": "Image upscale requires the flow.google.com batch transport"}
+        try:
+            pid = self._batch_project_id(project_id)
+            freq = fb.image_upscale_request(media_id, resolution)
+            payload = await self._batch_payload(
+                fb.RPC_UPSCALE_IMAGE,
+                freq,
+                fb.CAPTCHA_IMAGE,
+                timeout=150,
+            )
+            encoded = fb.read_upscaled_image(payload)
+        except Exception as e:
+            return _batch_error(e)
+        return {
+            "status": 200,
+            "data": {
+                "media_id": media_id,
+                "project_id": pid,
+                "resolution": str(resolution).upper(),
+                "encodedImage": encoded,
+                "contentType": "image/jpeg",
+            },
+        }
 
     async def generate_video(self, start_image_media_id: str, prompt: str,
                               project_id: str, scene_id: str,
