@@ -110,6 +110,6 @@ Play the output for user to verify voice quality matches the original.
 ## Notes
 
 - **Transcript accuracy matters** — `ref_text` must match the audio closely for good voice cloning. Always confirm with the user.
-- **CPU only** — whisper large-v3 and OmniVoice both run on CPU. MPS produces artifacts.
+- **CPU by default** — whisper large-v3 and local OmniVoice both run on CPU (MPS produces artifacts). For GPU speed, run OmniVoice as a remote service and set `TTS_BACKEND=remote` (see `fk-gen-tts-template.md`); transcription still runs locally on CPU.
 - **3-10s audio** — shorter clips lack enough voice characteristics; longer clips slow down cloning.
 - **One template per voice** — don't register multiple templates for the same voice. Update instead.

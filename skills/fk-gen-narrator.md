@@ -163,6 +163,12 @@ Ask user: "Review OK? Type 'yes' to generate TTS, or 'edit N' to modify scene N'
 **CRITICAL: Always pass BOTH `ref_audio` AND `ref_text` together.**
 Without `ref_text`, OmniVoice falls back to generic voice → each scene sounds different.
 
+> **Backend is transparent here.** `/api/tts/generate` uses whatever backend FlowKit
+> is configured with (`TTS_BACKEND=local` default, or `remote` for a GPU inference
+> service). This skill is identical either way — no request changes. See
+> `fk-gen-tts-template.md` and the README "Optional remote OmniVoice API" section for
+> backend setup.
+
 ### Proven workflow (per-scene via `/api/tts/generate`):
 
 The batch endpoint (`/api/videos/<VID>/narrate`) can timeout on large batches (40+ scenes).
