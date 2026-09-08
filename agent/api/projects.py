@@ -7,7 +7,7 @@ import aiohttp
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from agent.config import BASE_DIR, USE_BATCH_RPC
+from agent.config import BASE_DIR, USE_BATCH_RPC, FLOW_PROJECT_ID
 from agent.models.project import Project, ProjectCreate, ProjectUpdate
 from agent.models.character import Character
 from agent.sdk.persistence.sqlite_repository import SQLiteRepository
@@ -172,8 +172,9 @@ async def create(body: ProjectCreate):
 
     detected_tier = await _detect_user_tier(client)
 
-    # On the batch path Flow no longer creates projects for us — the uuid comes
-    # from the request or from FLOW_PROJECT_ID. The legacy path still mints one.
+    # On the batch path a pinned FLOW_PROJECT_ID (or a uuid passed in the request)
+    # is reused; with neither, create_project now mints one via jHPbke. The legacy
+    # path always mints one.
     flow_project_id = client.flow_project_id(body.flow_project_id) if USE_BATCH_RPC else None
     if flow_project_id:
         logger.info("Flow project reused: %s", flow_project_id)
@@ -259,9 +260,25 @@ async def update(pid: str, body: ProjectUpdate):
 
 @router.delete("/{pid}")
 async def delete(pid: str):
+    """Delete a project locally, and on Flow too when it is safe.
+
+    The project must exist locally before anything is deleted, so a stray uuid
+    cannot reach through to Flow — only projects Flow Kit already tracks are
+    eligible. Flow is then deleted first (except the pinned FLOW_PROJECT_ID, the
+    shared/operator project, which is only ever removed locally) so a remote
+    failure leaves the local row in place rather than letting the two drift.
+    """
     repo = _get_repo()
-    if not await repo.delete_project(pid):
+    if not await repo.get_project(pid):
         raise HTTPException(404, "Project not found")
+    if USE_BATCH_RPC and pid != (FLOW_PROJECT_ID or None):
+        client = get_flow_client()
+        if not client.connected:
+            raise HTTPException(503, "Extension not connected — cannot delete this project on Google Flow")
+        result = await client.delete_project(pid)
+        if result.get("error"):
+            raise HTTPException(502, f"Flow delete failed: {result['error']}")
+    await repo.delete_project(pid)
     return {"ok": True}
 
 
