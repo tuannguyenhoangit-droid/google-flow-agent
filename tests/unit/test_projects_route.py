@@ -14,9 +14,14 @@ class FakeRepo:
     def __init__(self, exists=True):
         self._exists = exists
         self.deleted = []
+        self.created = []
 
     async def get_project(self, pid):
         return {"id": pid} if self._exists else None
+
+    async def create_project(self, **kw):
+        self.created.append(kw)
+        return {"id": kw.get("id")}
 
     async def delete_project(self, pid):
         self.deleted.append(pid)
@@ -24,10 +29,17 @@ class FakeRepo:
 
 
 class FakeClient:
-    def __init__(self, connected=True, error=None):
+    def __init__(self, connected=True, error=None, pin="pinned-project"):
         self.connected = connected
         self._error = error
+        self._pin = pin
         self.deleted = []
+
+    def flow_project_id(self, requested=None):
+        return requested or self._pin
+
+    async def get_credits(self):
+        return {"status": 200, "data": {"userPaygateTier": "PAYGATE_TIER_TWO"}}
 
     async def delete_project(self, pid):
         self.deleted.append(pid)
@@ -101,3 +113,17 @@ async def test_legacy_path_deletes_locally_without_touching_flow(wire):
     assert result == {"ok": True}
     assert client.deleted == []
     assert repo.deleted == ["proj-1"]
+
+
+async def test_create_reuses_an_existing_local_project_instead_of_reinserting(wire):
+    """A pinned/request project already in the DB is returned, not re-INSERTed.
+
+    The bare INSERT in crud.create_project raises `UNIQUE constraint failed:
+    project.id` on a duplicate id, which surfaced as an uncaught 500.
+    """
+    from agent.models.project import ProjectCreate
+    repo, client = FakeRepo(exists=True), FakeClient(pin="pinned-project")
+    wire(repo=repo, client=client, pin="pinned-project")
+    result = await projects.create(ProjectCreate(name="anything", material="realistic"))
+    assert result == {"id": "pinned-project"}, "returned the existing project row"
+    assert repo.created == [], "must not attempt a second INSERT of the same id"

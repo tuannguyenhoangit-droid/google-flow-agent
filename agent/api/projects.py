@@ -187,6 +187,15 @@ async def create(body: ProjectCreate):
 
     repo = _get_repo()
 
+    # Reuse is idempotent: a pinned or request-supplied project id may already
+    # have a local row. Re-inserting that id violates the primary key
+    # (sqlite3.IntegrityError -> 500), so hand back the row we already have. A
+    # freshly minted id never matches, so this is a no-op on the create path.
+    existing = await repo.get_project(flow_project_id)
+    if existing:
+        logger.info("Flow project already tracked, reusing: %s", flow_project_id)
+        return existing
+
     # Step 2: Create local project with the Flow-assigned ID and detected tier
     create_data = body.model_dump(exclude_none=True)
     create_data.pop("tool_name", None)
