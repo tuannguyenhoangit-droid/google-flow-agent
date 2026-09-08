@@ -34,13 +34,27 @@ window.fetch = async function (...args) {
 };
 
 
+let captchaMintTail = Promise.resolve();
+
+async function mintCaptcha(pageAction) {
+  const previous = captchaMintTail.catch(() => {});
+  let release;
+  captchaMintTail = new Promise((resolve) => { release = resolve; });
+  await previous;
+  try {
+    await waitForGrecaptcha();
+    return await window.grecaptcha.enterprise.execute(SITE_KEY, {
+      action: pageAction,
+    });
+  } finally {
+    release();
+  }
+}
+
 window.addEventListener('GET_CAPTCHA', async ({ detail }) => {
   const { requestId, pageAction } = detail;
   try {
-    await waitForGrecaptcha();
-    const token = await window.grecaptcha.enterprise.execute(SITE_KEY, {
-      action: pageAction,
-    });
+    const token = await mintCaptcha(pageAction);
     window.dispatchEvent(new CustomEvent('CAPTCHA_RESULT', {
       detail: { requestId, token },
     }));

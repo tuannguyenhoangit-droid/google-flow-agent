@@ -33,6 +33,19 @@ from agent.services.headers import random_headers
 
 logger = logging.getLogger(__name__)
 
+# Captured from the current Flow image composer. x4 launches independent
+# ogiZ0b requests at roughly 0.0s, 0.5s, 1.5s and 2.5s rather than bursting
+# all variants at once. The generation work still overlaps after submission.
+IMAGE_UI_SUBMIT_OFFSETS_S = (0.0, 0.5, 1.5, 2.5)
+
+# RPC [8] is a transient Flow-side generation rejection seen under image load.
+# A short 6s retry was still rejected in live testing, so use one bounded
+# cooldown retry rather than hot-looping or multiplying duplicate generations.
+# This is FlowKit resilience policy; the current UI was not observed to retry
+# automatically after the same failure.
+IMAGE_TRANSIENT_RETRY_DELAY_S = 34.0
+IMAGE_TRANSIENT_MAX_ATTEMPTS = 2
+
 
 class FlowClient:
     """Sends commands to Chrome extension via WebSocket."""
@@ -572,7 +585,10 @@ class FlowClient:
                                aspect_ratio: str = "IMAGE_ASPECT_RATIO_PORTRAIT",
                                user_paygate_tier: str = "PAYGATE_TIER_TWO",
                                character_media_ids: list[str] = None,
-                               image_model: str = None) -> dict:
+                               image_model: str = None,
+                               count: int = 1,
+                               seed: int | None = None,
+                               base_media_id: str | None = None) -> dict:
         """Generate image(s).
 
         ``character_media_ids`` are attached as reference images, which is what
@@ -585,47 +601,151 @@ class FlowClient:
                 prompt, project_id, aspect_ratio, user_paygate_tier, character_media_ids)
 
         try:
+            if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 4:
+                raise ValueError("image count must be an integer from 1 to 4")
             pid = self._batch_project_id(project_id)
-            freq = fb.image_request(
-                prompt, pid, count=1, aspect=aspect_ratio,
-                model=self._batch_image_model(image_model),
-                ref_media_ids=list(character_media_ids or []) or None,
-            )
-            payload = await self._batch_payload(fb.RPC_GEN_IMAGE, freq, fb.CAPTCHA_IMAGE)
+            model = self._batch_image_model(image_model)
+            refs = list(character_media_ids or []) or None
+
+            async def submit_once(index: int, launch_offset: float = 0.0):
+                if launch_offset:
+                    await asyncio.sleep(launch_offset)
+                request_seed = seed + index * 9973 if seed is not None else None
+                freq = fb.image_request(
+                    prompt, pid, count=1, aspect=aspect_ratio, seed=request_seed,
+                    model=model, ref_media_ids=refs, base_media_id=base_media_id,
+                )
+                payload = await self._batch_payload(
+                    fb.RPC_GEN_IMAGE, freq, fb.CAPTCHA_IMAGE
+                )
+                generated = fb.read_images(payload)
+                if not generated:
+                    raise fb.FlowBatchError("Image generation returned no media url")
+                return generated[0]
+
+            async def run_wave(indices: list[int]) -> dict[int, object]:
+                # Flow's UI starts variants as separate single-image RPCs with a
+                # short cadence instead of a burst. Apply the cadence relative
+                # to each wave, while Google still performs the generation work
+                # concurrently after each request has been accepted.
+                tasks = [
+                    submit_once(index, IMAGE_UI_SUBMIT_OFFSETS_S[position])
+                    for position, index in enumerate(indices)
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                return dict(zip(indices, results))
+
+            results = await run_wave(list(range(count)))
+            retry_indices = [
+                index for index, result in results.items()
+                if isinstance(result, fb.RpcError)
+                and result.rpcid == fb.RPC_GEN_IMAGE
+                and result.detail == [8]
+            ]
+            if retry_indices:
+                logger.warning(
+                    "Flow image wave had transient [8] for variant(s) %s; "
+                    "retrying after %.0fs cooldown once the first wave is fully settled",
+                    ",".join(str(i + 1) for i in retry_indices),
+                    IMAGE_TRANSIENT_RETRY_DELAY_S,
+                )
+                await asyncio.sleep(IMAGE_TRANSIENT_RETRY_DELAY_S)
+                retried = await run_wave(retry_indices)
+                results.update(retried)
+
+            images_by_index = {
+                index: result
+                for index, result in results.items()
+                if not isinstance(result, BaseException)
+            }
+            failures = {
+                index: result
+                for index, result in results.items()
+                if isinstance(result, BaseException)
+            }
+            if not images_by_index:
+                first_error = failures[min(failures)] if failures else fb.FlowBatchError(
+                    "Image generation returned no media url"
+                )
+                raise first_error
+
+            images = [images_by_index[index] for index in sorted(images_by_index)]
+
         except Exception as e:
             return _batch_error(e)
 
-        images = fb.read_images(payload)
-        if not images:
-            return {"status": 502, "error": "Image generation returned no media url"}
-        return {"status": 200, "data": {"media": [_as_media_record(i) for i in images]}}
+        data = {
+            "media": [_as_media_record(i) for i in images],
+            "requested_count": count,
+            "generated_count": len(images),
+            "complete": len(images) == count,
+        }
+        if failures:
+            data["failed_variants"] = [
+                {"index": index + 1, "error": str(error)}
+                for index, error in sorted(failures.items())
+            ]
+        return {"status": 200, "data": data}
 
     async def edit_image(self, prompt: str, source_media_id: str,
                           project_id: str,
                           aspect_ratio: str = "IMAGE_ASPECT_RATIO_PORTRAIT",
                           user_paygate_tier: str = "PAYGATE_TIER_ONE",
-                          character_media_ids: list[str] = None) -> dict:
-        """Regenerate from an existing image plus any entity references.
+                          character_media_ids: list[str] = None,
+                          image_model: str = None,
+                          count: int = 1,
+                          seed: int | None = None) -> dict:
+        """Edit an image with the source encoded as Flow's BASE_IMAGE input.
 
-        The REST path had a dedicated base-image input type; the new payload's
-        reference slot was captured but a base-image variant of it was not, so
-        here the source rides in as the first reference. In practice that
-        conditions the result on the source rather than editing it in place —
-        good enough for continuation scenes, not identical to the old edit.
-        Capturing the real slot is the fix; see docs/CAPTURE.md.
+        Additional references remain REFERENCE inputs. Sending the source as a
+        generic reference conditions a fresh generation; BASE_IMAGE is the wire
+        shape the current Flow editor uses for an actual image edit/refine.
         """
         if not USE_BATCH_RPC:
             return await self._legacy_edit_image(
                 prompt, source_media_id, project_id, aspect_ratio,
                 user_paygate_tier, character_media_ids)
 
-        refs = [source_media_id] + [
-            mid for mid in (character_media_ids or []) if mid != source_media_id
-        ]
+        refs = [mid for mid in (character_media_ids or []) if mid != source_media_id]
         return await self.generate_images(
-            prompt=prompt, project_id=project_id, aspect_ratio=aspect_ratio,
-            user_paygate_tier=user_paygate_tier, character_media_ids=refs,
+            prompt=prompt,
+            project_id=project_id,
+            aspect_ratio=aspect_ratio,
+            user_paygate_tier=user_paygate_tier,
+            character_media_ids=refs,
+            image_model=image_model,
+            count=count,
+            seed=seed,
+            base_media_id=source_media_id,
         )
+
+    async def upscale_image(self, media_id: str, project_id: str,
+                            resolution: str = "2K") -> dict:
+        """Return Flow's synchronous 2K/4K image upscale as base64 JPEG data."""
+        if not USE_BATCH_RPC:
+            return {"status": 400, "error": "Image upscale requires the flow.google.com batch transport"}
+        try:
+            pid = self._batch_project_id(project_id)
+            freq = fb.image_upscale_request(media_id, resolution)
+            payload = await self._batch_payload(
+                fb.RPC_UPSCALE_IMAGE,
+                freq,
+                fb.CAPTCHA_IMAGE,
+                timeout=150,
+            )
+            encoded = fb.read_upscaled_image(payload)
+        except Exception as e:
+            return _batch_error(e)
+        return {
+            "status": 200,
+            "data": {
+                "media_id": media_id,
+                "project_id": pid,
+                "resolution": str(resolution).upper(),
+                "encodedImage": encoded,
+                "contentType": "image/jpeg",
+            },
+        }
 
     async def generate_video(self, start_image_media_id: str, prompt: str,
                               project_id: str, scene_id: str,

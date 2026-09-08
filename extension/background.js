@@ -480,10 +480,15 @@ async function runBatchRpc(cmd) {
       const bl = wiz.cfb2h;
       if (!at) return { error: 'NO_AT_TOKEN' };
       const reqid = Math.floor(Math.random() * 900000) + 100000;
+      // Match Flow's own WIZ metadata. GEM_PIX_2 (Nano Banana Pro) rejects
+      // image generation when source-path is missing even though Lite may not.
+      const sourcePath = location.pathname || '/';
+      const hl = (document.documentElement.lang || navigator.language || 'en').split('-')[0];
       const url =
         `/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${encodeURIComponent(rpcid)}` +
-        `&f.sid=${encodeURIComponent(sid || '')}&bl=${encodeURIComponent(bl || '')}` +
-        `&hl=en-AU&_reqid=${reqid}&rt=c`;
+        `&source-path=${encodeURIComponent(sourcePath)}` +
+        `&bl=${encodeURIComponent(bl || '')}&f.sid=${encodeURIComponent(sid || '')}` +
+        `&hl=${encodeURIComponent(hl)}&_reqid=${reqid}&rt=c`;
       const resp = await fetch(url, {
         method: 'POST',
         credentials: 'include',

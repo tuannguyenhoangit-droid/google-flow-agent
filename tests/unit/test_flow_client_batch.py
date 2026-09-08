@@ -72,6 +72,122 @@ class TestGenerateImages:
         assert item[2] == [["ref-a", None, None, None, fb.REF_TYPE_IMAGE],
                            ["ref-b", None, None, None, fb.REF_TYPE_IMAGE]]
 
+    async def test_explicit_model_and_count_dispatch_as_ui_style_rpcs(self, client, monkeypatch):
+        import agent.services.flow_client as module
+        sleeps = []
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+        client.responses[fb.RPC_GEN_IMAGE] = {
+            "data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])
+        }
+        result = await client.generate_images(
+            "a cat", PROJECT, image_model="HARBOR_SEAL", count=2, seed=100,
+        )
+        assert len(client.calls) == 2
+        items = [json.loads(json.loads(call["freq"])[0][0][1])[1] for call in client.calls]
+        assert [len(group) for group in items] == [1, 1]
+        assert [group[0][5] for group in items] == ["HARBOR_SEAL", "HARBOR_SEAL"]
+        assert [group[0][3] for group in items] == [100, 100 + 9973]
+        assert all(call["captcha"] == fb.CAPTCHA_IMAGE for call in client.calls)
+        assert sleeps == [module.IMAGE_UI_SUBMIT_OFFSETS_S[1]]
+        assert len(result["data"]["media"]) == 2
+
+    async def test_count_four_uses_captured_ui_launch_offsets(self, client, monkeypatch):
+        import agent.services.flow_client as module
+        sleeps = []
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+        client.responses[fb.RPC_GEN_IMAGE] = {
+            "data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])
+        }
+        result = await client.generate_images("a cat", PROJECT, count=4)
+        assert len(client.calls) == 4
+        assert sleeps == list(module.IMAGE_UI_SUBMIT_OFFSETS_S[1:4])
+        assert len(result["data"]["media"]) == 4
+
+    async def test_rpc_error_8_retries_once_after_cooldown(self, client, monkeypatch):
+        import agent.services.flow_client as module
+
+        attempts = 0
+        sleeps = []
+
+        async def fake_payload(rpcid, freq, captcha_action=None, timeout=300):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise fb.RpcError(fb.RPC_GEN_IMAGE, [8])
+            return [[IMAGE_URL]]
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        client._batch_payload = fake_payload
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+
+        result = await client.generate_images("a cat", PROJECT, count=1)
+        assert not _is_error(result)
+        assert attempts == 2
+        assert sleeps == [module.IMAGE_TRANSIENT_RETRY_DELAY_S]
+
+    async def test_non_transient_rpc_error_is_not_retried(self, client, monkeypatch):
+        import agent.services.flow_client as module
+
+        attempts = 0
+        sleeps = []
+
+        async def fake_payload(rpcid, freq, captcha_action=None, timeout=300):
+            nonlocal attempts
+            attempts += 1
+            raise fb.RpcError(fb.RPC_GEN_IMAGE, [5])
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        client._batch_payload = fake_payload
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+
+        result = await client.generate_images("a cat", PROJECT, count=1)
+        assert _is_error(result)
+        assert attempts == 1
+        assert sleeps == []
+
+    async def test_partial_batch_keeps_successes_and_reports_failed_variants(self, client, monkeypatch):
+        import agent.services.flow_client as module
+
+        async def fake_sleep(_delay):
+            return None
+
+        async def fake_payload(rpcid, freq, captcha_action=None, timeout=300):
+            item = json.loads(json.loads(freq)[0][0][1])[1][0]
+            if item[3] == 100 + 9973:
+                raise fb.RpcError(fb.RPC_GEN_IMAGE, [5])
+            return [[IMAGE_URL]]
+
+        client._batch_payload = fake_payload
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+
+        result = await client.generate_images("a cat", PROJECT, count=2, seed=100)
+        assert not _is_error(result)
+        data = result["data"]
+        assert len(data["media"]) == 1
+        assert data["requested_count"] == 2
+        assert data["generated_count"] == 1
+        assert data["complete"] is False
+        assert data["failed_variants"][0]["index"] == 2
+        assert "[5]" in data["failed_variants"][0]["error"]
+
+    async def test_future_wire_model_is_not_silently_replaced(self, client):
+        client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}
+        await client.generate_images("a cat", PROJECT, image_model="FUTURE_BANANA_3")
+        item = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])[1][0]
+        assert item[5] == "FUTURE_BANANA_3"
+
     async def test_a_project_less_call_falls_back_to_the_pinned_project(self, client):
         client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}
         await client.generate_images("a cat", "0")
@@ -96,19 +212,39 @@ class TestGenerateImages:
 
 
 class TestEditImage:
-    async def test_the_source_leads_the_reference_list(self, client):
+    async def test_source_is_base_image_and_extra_inputs_are_references(self, client):
         client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}
         await client.edit_image("redraw", "src-1", PROJECT, character_media_ids=["ref-a"])
 
         item = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])[1][0]
-        assert [ref[0] for ref in item[2]] == ["src-1", "ref-a"]
+        assert item[2] == [
+            ["src-1", None, None, None, fb.BASE_TYPE_IMAGE],
+            ["ref-a", None, None, None, fb.REF_TYPE_IMAGE],
+        ]
 
-    async def test_the_source_is_not_repeated_when_it_is_also_a_character(self, client):
+    async def test_source_is_not_repeated_when_also_supplied_as_reference(self, client):
         client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}
         await client.edit_image("redraw", "src-1", PROJECT, character_media_ids=["src-1", "ref-a"])
 
         item = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])[1][0]
         assert [ref[0] for ref in item[2]] == ["src-1", "ref-a"]
+        assert [ref[4] for ref in item[2]] == [fb.BASE_TYPE_IMAGE, fb.REF_TYPE_IMAGE]
+
+
+class TestUpscaleImage:
+    async def test_2k_upscale_uses_sprcad_and_returns_encoded_image(self, client):
+        encoded = "A" * 200
+        client.responses[fb.RPC_UPSCALE_IMAGE] = {
+            "data": envelope(fb.RPC_UPSCALE_IMAGE, [["media-record"], encoded])
+        }
+        result = await client.upscale_image(MEDIA, PROJECT, "2K")
+        assert result["data"]["encodedImage"] == encoded
+        assert result["data"]["resolution"] == "2K"
+        assert client.calls[0]["rpcid"] == fb.RPC_UPSCALE_IMAGE
+        assert client.calls[0]["captcha"] == fb.CAPTCHA_IMAGE
+        payload = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])
+        assert payload[0] == MEDIA
+        assert payload[1] == 1
 
 
 class TestGenerateVideo:

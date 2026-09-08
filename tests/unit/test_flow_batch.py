@@ -85,6 +85,21 @@ class TestImageRequest:
         item = inner(fb.image_request("a cat", self.PID, ref_media_ids=["mid-1"]))[1][0]
         assert item[2] == [["mid-1", None, None, None, fb.REF_TYPE_IMAGE]]
 
+    def test_base_image_and_references_use_distinct_wire_types(self):
+        item = inner(fb.image_request(
+            "make the boat blue", self.PID,
+            base_media_id="base-1", ref_media_ids=["ref-1", "base-1"],
+        ))[1][0]
+        assert item[2] == [
+            ["base-1", None, None, None, fb.BASE_TYPE_IMAGE],
+            ["ref-1", None, None, None, fb.REF_TYPE_IMAGE],
+        ]
+
+    @pytest.mark.parametrize("bad_count", [0, 5, -1, True])
+    def test_count_outside_flow_ui_range_is_rejected(self, bad_count):
+        with pytest.raises(ValueError):
+            fb.image_request("a cat", self.PID, count=bad_count)
+
     def test_no_references_leaves_the_slot_null_rather_than_empty(self):
         assert inner(fb.image_request("a cat", self.PID))[1][0][2] is None
 
@@ -97,6 +112,25 @@ class TestImageRequest:
     def test_the_model_is_named_in_slot_5(self):
         item = inner(fb.image_request("a cat", self.PID, model="NARWHAL"))[1][0]
         assert item[5] == "NARWHAL"
+
+
+class TestImageUpscaleRequest:
+    @pytest.mark.parametrize("resolution,wire", [
+        ("2k", 1),
+        ("4K", 2),
+        ("UPSAMPLE_IMAGE_RESOLUTION_2K", 1),
+    ])
+    def test_resolution_maps_to_live_sprcad_wire(self, resolution, wire):
+        payload = inner(fb.image_upscale_request("media-1", resolution))
+        assert payload[0] == "media-1"
+        assert payload[1] == wire
+        assert payload[2][1] == fb.SURFACE_ID
+        assert payload[2][5] is None
+        assert fb.CAPTCHA_SLOT in json.dumps(payload)
+
+    def test_unknown_resolution_is_rejected(self):
+        with pytest.raises(ValueError):
+            fb.image_upscale_request("media-1", "8K")
 
 
 class TestVideoRequest:
@@ -134,6 +168,11 @@ class TestReaders:
     def test_a_repeated_url_is_not_a_second_variant(self):
         url = f"https://{fb.MEDIA_HOST}/image/{self.MID}?sig=x"
         assert len(fb.read_images([url, url])) == 1
+
+    def test_image_upscale_reads_synchronous_encoded_image(self):
+        assert fb.read_upscaled_image([["media"], "A" * 200]) == "A" * 200
+        with pytest.raises(fb.FlowBatchError):
+            fb.read_upscaled_image([["media"], "short"])
 
     def test_operation_reads_the_id_and_status(self):
         op = fb.read_operation([None, 50, [[self.OP, "proj", "scene", "CAE"]]])
@@ -204,12 +243,32 @@ class TestResolvers:
     def test_nicknames_resolve_to_wire_names(self):
         assert fb.resolve_image_model("NANO_BANANA_PRO") == "GEM_PIX_2"
         assert fb.resolve_image_model("NANO_BANANA_2") == "NARWHAL"
+        assert fb.resolve_image_model("NANO_BANANA_2_LITE") == "HARBOR_SEAL"
 
-    def test_a_wire_name_passes_through(self):
+    def test_wire_names_and_future_model_ids_pass_through(self):
         assert fb.resolve_image_model("NARWHAL") == "NARWHAL"
+        assert fb.resolve_image_model("harbor_seal") == "HARBOR_SEAL"
+        assert fb.resolve_image_model("FUTURE_BANANA_3") == "FUTURE_BANANA_3"
 
-    def test_an_unknown_image_model_coerces_to_the_default(self):
-        assert fb.resolve_image_model("SOMETHING_ELSE") == fb.IMAGE_MODEL
+    def test_invalid_or_blank_model_falls_back_to_default(self):
+        assert fb.resolve_image_model("") == fb.IMAGE_MODEL
+        assert fb.resolve_image_model("not a wire id!") == fb.IMAGE_MODEL
+
+    @pytest.mark.parametrize("name,expected", [
+        ("1:1", fb.ASPECT_SQUARE),
+        ("9:16", fb.ASPECT_PORTRAIT),
+        ("16:9", fb.ASPECT_LANDSCAPE),
+        ("3:4", fb.ASPECT_PORTRAIT_4_3),
+        ("4:3", fb.ASPECT_LANDSCAPE_4_3),
+        ("IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR", fb.ASPECT_PORTRAIT_4_3),
+        ("IMAGE_ASPECT_RATIO_PORTRAIT_FOUR_THREE", fb.ASPECT_PORTRAIT_4_3),
+    ])
+    def test_all_current_image_aspect_names_and_friendly_aliases(self, name, expected):
+        assert fb.resolve_aspect(name) == expected
+
+    def test_invalid_integer_image_aspect_is_rejected(self):
+        with pytest.raises(ValueError):
+            fb.resolve_aspect(6)
 
     @pytest.mark.parametrize("legacy,expected", [
         ("veo_3_1_i2v_s_fast_ultra_relaxed", "veo_3_1_i2v_s_fast_ultra"),
