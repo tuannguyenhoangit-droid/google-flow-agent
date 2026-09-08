@@ -1,6 +1,11 @@
 /**
- * Injected into MAIN world on labs.google — has access to window.grecaptcha
- * Also intercepts TRPC fetch responses to capture fresh signed media URLs.
+ * Injected into the page's MAIN world on flow.google.com (and an old pinned
+ * labs.google tab) — has access to window.grecaptcha.
+ *
+ * The reCAPTCHA site key survived the September 2026 migration unchanged. The
+ * TRPC fetch intercept below did not: it belongs to the labs.google frontend
+ * and is inert on flow.google.com, where media urls come back inline on the
+ * generate call and from the media rpc.
  */
 const SITE_KEY = '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV';
 
@@ -46,7 +51,7 @@ window.addEventListener('GET_CAPTCHA', async ({ detail }) => {
   }
 });
 
-function waitForGrecaptcha(timeout = 10000) {
+function waitForGrecaptcha(timeout = 22000) {   // it loads lazily; 10s was optimistic
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const check = () => {

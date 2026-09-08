@@ -1,4 +1,4 @@
-Refresh expired GCS signed URLs for all scenes in a video (images, videos, upscale videos) and character reference images.
+Re-sign expired media URLs for all scenes in a video (images, videos, upscale videos) and character reference images.
 
 Usage: `/fk-refresh-urls <video_id> [--project-id <PID>]`
 
@@ -11,10 +11,10 @@ Usage: `/fk-refresh-urls <video_id> [--project-id <PID>]`
 ## Pre-flight
 
 ```bash
-# Extension must be connected with flow key
 curl -s http://127.0.0.1:8100/api/flow/status
-# Must show: {"connected": true, "flow_key_present": true}
-# If flow_key_present is false: open/refresh a Google Flow tab in Chrome
+# Must show: {"connected": true, "transport": "batch"}
+# Ignore flow_key_present — the batch path has no bearer token.
+# If connected is false: open https://flow.google.com/ and sign in.
 ```
 
 ## Step 1: Get project_id from video
@@ -25,9 +25,11 @@ PID=$(curl -s "http://127.0.0.1:8100/api/videos/${VID}" | python3 -c "import sys
 echo "Project: $PID"
 ```
 
-## Step 2: Bulk refresh via TRPC
+## Step 2: Bulk re-sign every stored media id
 
-This calls Google Flow's TRPC `flow.getFlow` endpoint, extracts ALL fresh signed URLs from the response, and updates scenes + characters in DB.
+This walks the project's scenes and entities, asks Flow's media rpc to re-sign
+each `*_media_id` it holds, and writes the fresh urls back to the DB. It is a
+call per media id, so a large project takes a moment.
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8100/api/flow/refresh-urls/${PID}" | python3 -c "
@@ -87,15 +89,20 @@ else:
 "
 ```
 
-## Step 4: Per-media fallback (if TRPC fails)
+## Step 4: Per-media fallback (for anything the bulk pass missed)
 
-If the bulk TRPC refresh doesn't cover all media (e.g., TRPC response is partial), fall back to per-media refresh:
+If a media id was not covered — because it is not stored on a scene or entity
+row — re-sign it directly:
 
 ```bash
-# Get a fresh URL for a specific media_id
 curl -s "http://127.0.0.1:8100/api/flow/media/<MEDIA_ID>"
-# Returns: {fifeUrl: "https://...", servingUri: "https://...", ...}
+# Returns: {"video": {"fifeUrl": "https://flow-content.google/video/…"},
+#           "image": {"fifeUrl": "https://flow-content.google/image/…"}}
 ```
+
+A record with only `image` and no `video` means the clip is not finished being
+written yet — the poster arrives before the video url does. Wait and retry;
+do not save the poster as the video.
 
 Then update the scene manually:
 
@@ -109,8 +116,9 @@ curl -X PATCH "http://127.0.0.1:8100/api/scenes/<SID>" \
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
-| `flow_key_present: false` | Extension hasn't captured auth token | Open/refresh a Google Flow tab in Chrome |
-| `Extension not connected` | Chrome extension WS disconnected | Check Chrome extension is enabled, refresh Flow tab |
-| `refreshed: 0` | TRPC returned no URLs | Project may not exist on Google Flow, or auth expired |
+| `flow_key_present: false` | No bearer token — **expected on the batch path** | Ignore; only meaningful with `USE_BATCH_RPC=0` |
+| `Extension not connected` | Chrome extension WS disconnected | Check the extension is enabled, refresh the Flow tab |
+| `refreshed: 0`, `found: 0` | No media ids stored for this project | Nothing to refresh — check the project id |
+| `refreshed: 0`, `found: N` | Every re-sign failed | Read the agent log; usually `NO_FLOW_TAB` or a signed-out Flow tab |
 | Some URLs still expired after refresh | media_id mismatch (upscale overwrote video_media_id) | Use per-media fallback with correct media_id |
 | `get_media` returns error for media_id | Media deleted or expired on Google's side | Re-generate the video/image |

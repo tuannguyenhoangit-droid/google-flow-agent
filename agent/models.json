@@ -56,5 +56,15 @@
   "image_models": {
     "NANO_BANANA_PRO": "GEM_PIX_2",
     "NANO_BANANA_2": "NARWHAL"
+  },
+  "default_image_model": "NANO_BANANA_PRO",
+  "batch_video_models": {
+    "_comment": "Wire names the flow.google.com batchexecute path accepts. video_models above are REST-era keys; resolve_video_model() folds them onto these (anything asking for 'ultra' lands on the ultra model).",
+    "accepted": [
+      "veo_3_1_i2v_lite_low_priority",
+      "veo_3_1_i2v_lite",
+      "veo_3_1_i2v_s_fast_ultra"
+    ],
+    "default": "veo_3_1_i2v_lite_low_priority"
   }
 }

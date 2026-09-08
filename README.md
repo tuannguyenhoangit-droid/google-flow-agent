@@ -50,7 +50,7 @@
 
 # FLOW KIT
 
-Standalone system to generate AI videos via Google Flow API. Uses a Chrome extension as browser bridge for authentication, reCAPTCHA solving, and API proxying.
+Standalone system to generate AI videos via Google Flow. Uses a Chrome extension as a browser bridge: it mints reCAPTCHA and runs Flow's batchexecute RPCs inside a signed-in `flow.google.com` tab, which is the only place they can be signed.
 
 ## Showcase
 
@@ -169,16 +169,28 @@ A local React dashboard (`dashboard/`) for monitoring and driving the pipeline �
 ## Architecture
 
 ```
-┌──────────────────┐     WebSocket      ┌──────────────────────┐
-│  Python Agent    │◄──────────────────►│  Chrome Extension     │
-│  (FastAPI+SQLite)│     localhost:9222  │  (MV3 Service Worker) │
-│                  │                    │                       │
-│  - REST API :8100│  ── commands ──►   │  - Token capture      │
-│  - Queue worker  │  ◄── results ──    │  - reCAPTCHA solve    │
-│  - Post-process  │                    │  - API proxy          │
-│  - SQLite DB     │                    │  (on labs.google)     │
-└──────────────────┘                    └──────────────────────┘
+┌──────────────────┐     WebSocket      ┌──────────────────────┐     ┌──────────────────┐
+│  Python Agent    │◄──────────────────►│  Chrome Extension     │────►│  flow.google.com │
+│  (FastAPI+SQLite)│    localhost:9222  │  (MV3 Service Worker) │     │  (signed-in tab) │
+│                  │                    │                       │     │                  │
+│  - REST API :8100│  ── envelopes ──►  │  - reCAPTCHA mint     │     │  batchexecute    │
+│  - Queue worker  │  ◄── responses ──  │  - runs the RPC in    │     │  cookie + `at`   │
+│  - Post-process  │                    │    the page's world   │     │                  │
+│  - SQLite DB     │                    │                       │     │                  │
+└──────────────────┘                    └──────────────────────┘     └──────────────────┘
 ```
+
+Flow signs every call with the session cookie plus a per-page `at` token, and a
+generate also carries a single-use reCAPTCHA. None of that can be replayed from
+outside the browser, so the agent builds the request and the **page** issues it.
+One signed-in Flow tab has to stay open; nothing here works headless.
+
+> **September 2026 — Flow moved.** It now lives at `flow.google.com` and the old
+> `aisandbox-pa.googleapis.com` REST API has no caller: the `Bearer ya29.…` it
+> needed stopped being minted. If you are upgrading from an older Flow Kit,
+> reload the extension (v0.3.0+) and pin `FLOW_PROJECT_ID` — see
+> [Configuration](#configuration). The legacy path is still there behind
+> `USE_BATCH_RPC=0`, but it is a post-mortem tool, not a fallback.
 
 ## Quick Start
 
@@ -203,15 +215,48 @@ pip install -r requirements.txt
 
 ```bash
 # 1. Load Chrome extension: chrome://extensions → Developer mode → Load unpacked → extension/
-# 2. Open https://labs.google/fx/tools/flow and sign in
-# 3. Start agent
+# 2. Open https://flow.google.com/ and sign in — leave the tab open
+# 3. Create a project in the Flow UI and copy its uuid out of the URL
+export FLOW_PROJECT_ID=<that uuid>
+
+# 4. Start agent
 source venv/bin/activate   # if using setup.sh
 python -m agent.main
 
-# 4. Verify
+# 5. Verify
 curl http://127.0.0.1:8100/health
 # {"status":"ok","extension_connected":true}
+curl http://127.0.0.1:8100/api/flow/status
+# {"connected":true,"transport":"batch","flow_project_id":"…","flow_key_present":false}
 ```
+
+`flow_key_present: false` is expected — the current transport has no bearer
+token. Step 3 is not optional: Flow's project-creation endpoint went with the
+migration, so without a pinned project every request fails `NO_FLOW_PROJECT`.
+You can also pass `flow_project_id` per project on `POST /api/projects`.
+
+### Configuration
+
+| Env var | Default | What it does |
+|---------|---------|--------------|
+| `FLOW_PROJECT_ID` | — | The Flow project every RPC is scoped to. Required. |
+| `USE_BATCH_RPC` | `1` | `0` falls back to the pre-migration REST path (dead auth). |
+| `FLOW_ALLOW_DEGRADED` | `0` | `1` lets scene chaining and r2v fall back to plain i2v instead of failing. |
+| `DEFAULT_PAYGATE_TIER` | `PAYGATE_TIER_TWO` | Carried for the DB and dashboard; no longer selects a model. |
+
+### What does not work on the new API yet
+
+Three capabilities have no captured payload, so they fail with
+`UNSUPPORTED_ON_BATCH_API` rather than quietly producing the wrong thing:
+
+| Capability | Status | Workaround |
+|---|---|---|
+| 4K/1080p upscale (`/fk-pipeline` last step) | unported | none — keep the 1080p render |
+| Reference-to-video (r2v) | unported | `FLOW_ALLOW_DEGRADED=1` → i2v off the first reference |
+| Start+end-frame chaining (`/fk-gen-chain-videos`) | unported | `FLOW_ALLOW_DEGRADED=1` → i2v off the start frame |
+| Omni Flash (`model_family=omni_flash`) | unported | use `model_family=veo` |
+
+Restoring one starts with a capture, not a guess: [`docs/CAPTURE.md`](docs/CAPTURE.md).
 
 ## End-to-End Example: "Pippip the Fish Merchant"
 
@@ -768,7 +813,7 @@ These arrive in the response body as `data.error.details[].reason`. The worker a
 | Status | Source | Meaning | Handling |
 |--------|--------|---------|----------|
 | **400** | Flow API | Invalid payload, UNSAFE_GENERATION, entity not found (sometimes) | Route by `details.reason` — some are auto-recoverable, others terminal |
-| **401** | Flow API | Bearer token expired | Extension re-captures token from labs.google tab; request retries |
+| **401** | Flow API (legacy path only) | Bearer expired — on a post-migration profile it was never minted | Switch to the batch path (`USE_BATCH_RPC=1`) |
 | **403** | Extension (`background.js:432`) | `CAPTCHA_FAILED`, `NO_FLOW_TAB`, or `MODEL_ACCESS_DENIED` | CAPTCHA → retry loop; NO_FLOW_TAB → fail (user must open Flow); tier → fail |
 | **404** | Flow API | `media_id` not found (expired upload) | Same as "Requested entity was not found" — auto re-upload |
 | **429** | Flow API | Rate limited / quota | Back off + retry; if `USER_QUOTA_REACHED` appears, fail |
@@ -788,7 +833,10 @@ String patterns in `error_message` that the worker recognizes:
 | `Extension not connected` | Chrome extension offline or WS dropped | 503 returned; worker re-queues PENDING and waits |
 | `extension reconnected` / `extension disconnected` | WS bounce mid-request | Re-queue PENDING without incrementing `retry_count` |
 | `extension_switched` | User switched Flow tabs mid-generation | Re-queue PENDING |
-| `NO_FLOW_KEY` | Extension has no captured bearer token | User must open `labs.google/fx/tools/flow` and sign in |
+| `NO_FLOW_KEY` | Extension has no captured bearer token — **legacy path only**, expected on the batch path | Only meaningful with `USE_BATCH_RPC=0` |
+| `NO_AT_TOKEN` | Flow tab is signed out, on an interstitial, or still booting | Open `flow.google.com`, sign in, let the app load |
+| `NO_FLOW_PROJECT` | No Flow project to scope the RPC to | Pin `FLOW_PROJECT_ID` — **terminal, not retried** |
+| `UNSUPPORTED_ON_BATCH_API` | Upscale / r2v / chaining — payload never captured | See `docs/CAPTURE.md` — **terminal, not retried** |
 | `NO_FLOW_TAB` | No Google Flow tab available for reCAPTCHA | User must open a Flow tab |
 | `Failed to fetch` | Network drop inside extension service worker | Retry with backoff |
 | `timeout` / WS 60s no response | Extension hung mid-request | Re-queue PENDING |
@@ -820,7 +868,7 @@ From `youtube/upload.py` (HTTP errors from YouTube Data API v3):
 | Problem | Solution |
 |---------|----------|
 | Extension shows "Agent disconnected" | Start `python -m agent.main` |
-| Extension shows "No token" | Open `labs.google/fx/tools/flow` and sign in |
+| Extension shows "No token" | Expected on the batch path — there is no bearer token any more |
 | `CAPTCHA_FAILED: NO_FLOW_TAB` | Open a Google Flow tab |
 | 403 `MODEL_ACCESS_DENIED` | Tier mismatch — check `/api/flow/credits`, downgrade model in `models.json` |
 | 403 `PUBLIC_ERROR_UNUSUAL_ACTIVITY` / `reCAPTCHA evaluation failed` | Pause submits, clear cookies for `google.com` + `labs.google` in Chrome, sign back in, then resubmit with ≥1s gap and ≤5 concurrent. Switch network or wait 1–6 h if still blocked |

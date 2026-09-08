@@ -1,9 +1,16 @@
-"""Unit tests for Gemini Omni Flash Flow submissions and workflow polling."""
+"""Unit tests for Gemini Omni Flash Flow submissions and workflow polling.
+
+Omni speaks the pre-migration transports — the REST endpoints on aisandbox-pa
+and the labs.google tRPC snapshot it polls through — so the wire contracts
+asserted here are legacy-path contracts and the module is pinned to that path
+for the file. What happens on the batch path is one test at the bottom.
+"""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import agent.services.omni_flash as omni_flash
 from agent.services.omni_flash import (
     OMNI_FLASH_MAX_REFERENCE_IMAGES,
     _fetch_media_url,
@@ -15,6 +22,12 @@ from agent.services.omni_flash import (
     generate_omni_flash_first_last_video,
     generate_omni_flash_video,
 )
+
+
+@pytest.fixture(autouse=True)
+def legacy_transport(monkeypatch):
+    """Omni is only reachable on the pre-migration path; assert it there."""
+    monkeypatch.setattr(omni_flash, "USE_BATCH_RPC", False)
 
 
 @pytest.mark.parametrize(
@@ -462,3 +475,52 @@ async def test_submit_rejects_empty_reference_set():
             project_id="p",
             duration_s=8,
         )
+
+
+class TestBatchPathIsRefusedRatherThanAttempted:
+    """Flow stopped minting the bearer these endpoints need, and no Omni
+    payload has been captured off the new frontend. Saying so beats a 401
+    five retries deep."""
+
+    @pytest.fixture(autouse=True)
+    def batch_transport(self, monkeypatch):
+        monkeypatch.setattr(omni_flash, "USE_BATCH_RPC", True)
+
+    @pytest.fixture
+    def client(self):
+        with patch("agent.services.omni_flash.get_flow_client") as factory:
+            stub = MagicMock()
+            stub._send = AsyncMock()
+            factory.return_value = stub
+            yield stub
+
+    async def test_first_frame_names_the_gap_and_sends_nothing(self, client):
+        result = await generate_omni_flash_first_frame_video(
+            start_image_media_id="mid", prompt="go", project_id="pid")
+        assert "UNSUPPORTED_ON_BATCH_API" in result["error"]
+        client._send.assert_not_called()
+
+    async def test_first_last_names_the_gap_and_sends_nothing(self, client):
+        result = await generate_omni_flash_first_last_video(
+            start_image_media_id="a", end_image_media_id="b",
+            prompt="go", project_id="pid")
+        assert "UNSUPPORTED_ON_BATCH_API" in result["error"]
+        client._send.assert_not_called()
+
+    async def test_reference_to_video_names_the_gap_and_sends_nothing(self, client):
+        result = await generate_omni_flash_video(
+            reference_media_ids=["a"], prompt="go", project_id="pid")
+        assert "UNSUPPORTED_ON_BATCH_API" in result["error"]
+        client._send.assert_not_called()
+
+    async def test_polling_names_the_gap_and_sends_nothing(self, client):
+        result = await check_omni_flash_status(
+            [{"name": "wf", "primary_media_id": "mid", "project_id": "pid"}])
+        assert "UNSUPPORTED_ON_BATCH_API" in result["error"]
+        client._send.assert_not_called()
+
+    async def test_the_message_points_at_both_ways_out(self, client):
+        result = await generate_omni_flash_video(
+            reference_media_ids=["a"], prompt="go", project_id="pid")
+        assert "docs/CAPTURE.md" in result["error"]
+        assert "USE_BATCH_RPC=0" in result["error"]
