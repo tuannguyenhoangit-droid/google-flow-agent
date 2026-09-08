@@ -22,3 +22,8 @@ ds-bundle/
 .design-sync/.cache/
 .design-sync/learnings/
 .design-sync/node_modules
+
+# Local dev artifacts (never commit)
+.DS_Store
+venv/
+extension/_metadata/
