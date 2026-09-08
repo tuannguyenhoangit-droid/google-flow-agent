@@ -38,6 +38,14 @@ mirrors that behavior instead of sending an unofficial multi-item burst inside
 one RPC. Each variant keeps its own seed; when `seed` is supplied, later
 variants use a deterministic stride.
 
+FlowKit treats only image RPC `[8]` as transient. It waits for the entire first
+variant wave to settle, cools down for 34 seconds, then retries only failed `[8]`
+variants once with fresh request UUIDs and the same seed. This is a FlowKit
+resilience policy; live UI capture did not show the same automatic retry. If a
+multi-image request still has a failed variant after retry, already successful
+images are preserved and the response reports `complete=false`,
+`generated_count`, and `failed_variants` instead of discarding the whole batch.
+
 ## Aspect ratios
 
 All five current image ratios are supported, using either the friendly ratio or

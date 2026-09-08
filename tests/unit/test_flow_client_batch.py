@@ -111,6 +111,77 @@ class TestGenerateImages:
         assert sleeps == list(module.IMAGE_UI_SUBMIT_OFFSETS_S[1:4])
         assert len(result["data"]["media"]) == 4
 
+    async def test_rpc_error_8_retries_once_after_cooldown(self, client, monkeypatch):
+        import agent.services.flow_client as module
+
+        attempts = 0
+        sleeps = []
+
+        async def fake_payload(rpcid, freq, captcha_action=None, timeout=300):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise fb.RpcError(fb.RPC_GEN_IMAGE, [8])
+            return [[IMAGE_URL]]
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        client._batch_payload = fake_payload
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+
+        result = await client.generate_images("a cat", PROJECT, count=1)
+        assert not _is_error(result)
+        assert attempts == 2
+        assert sleeps == [module.IMAGE_TRANSIENT_RETRY_DELAY_S]
+
+    async def test_non_transient_rpc_error_is_not_retried(self, client, monkeypatch):
+        import agent.services.flow_client as module
+
+        attempts = 0
+        sleeps = []
+
+        async def fake_payload(rpcid, freq, captcha_action=None, timeout=300):
+            nonlocal attempts
+            attempts += 1
+            raise fb.RpcError(fb.RPC_GEN_IMAGE, [5])
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        client._batch_payload = fake_payload
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+
+        result = await client.generate_images("a cat", PROJECT, count=1)
+        assert _is_error(result)
+        assert attempts == 1
+        assert sleeps == []
+
+    async def test_partial_batch_keeps_successes_and_reports_failed_variants(self, client, monkeypatch):
+        import agent.services.flow_client as module
+
+        async def fake_sleep(_delay):
+            return None
+
+        async def fake_payload(rpcid, freq, captcha_action=None, timeout=300):
+            item = json.loads(json.loads(freq)[0][0][1])[1][0]
+            if item[3] == 100 + 9973:
+                raise fb.RpcError(fb.RPC_GEN_IMAGE, [5])
+            return [[IMAGE_URL]]
+
+        client._batch_payload = fake_payload
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+
+        result = await client.generate_images("a cat", PROJECT, count=2, seed=100)
+        assert not _is_error(result)
+        data = result["data"]
+        assert len(data["media"]) == 1
+        assert data["requested_count"] == 2
+        assert data["generated_count"] == 1
+        assert data["complete"] is False
+        assert data["failed_variants"][0]["index"] == 2
+        assert "[5]" in data["failed_variants"][0]["error"]
+
     async def test_future_wire_model_is_not_silently_replaced(self, client):
         client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}
         await client.generate_images("a cat", PROJECT, image_model="FUTURE_BANANA_3")

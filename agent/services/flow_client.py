@@ -38,6 +38,14 @@ logger = logging.getLogger(__name__)
 # all variants at once. The generation work still overlaps after submission.
 IMAGE_UI_SUBMIT_OFFSETS_S = (0.0, 0.5, 1.5, 2.5)
 
+# RPC [8] is a transient Flow-side generation rejection seen under image load.
+# A short 6s retry was still rejected in live testing, so use one bounded
+# cooldown retry rather than hot-looping or multiplying duplicate generations.
+# This is FlowKit resilience policy; the current UI was not observed to retry
+# automatically after the same failure.
+IMAGE_TRANSIENT_RETRY_DELAY_S = 34.0
+IMAGE_TRANSIENT_MAX_ATTEMPTS = 2
+
 
 class FlowClient:
     """Sends commands to Chrome extension via WebSocket."""
@@ -599,12 +607,9 @@ class FlowClient:
             model = self._batch_image_model(image_model)
             refs = list(character_media_ids or []) or None
 
-            async def submit_one(index: int):
-                # Flow UI implements x2/x3/x4 as independent single-image RPCs.
-                # It also staggers their launch to avoid an artificial burst.
-                offset = IMAGE_UI_SUBMIT_OFFSETS_S[index]
-                if offset:
-                    await asyncio.sleep(offset)
+            async def submit_once(index: int, launch_offset: float = 0.0):
+                if launch_offset:
+                    await asyncio.sleep(launch_offset)
                 request_seed = seed + index * 9973 if seed is not None else None
                 freq = fb.image_request(
                     prompt, pid, count=1, aspect=aspect_ratio, seed=request_seed,
@@ -618,11 +623,69 @@ class FlowClient:
                     raise fb.FlowBatchError("Image generation returned no media url")
                 return generated[0]
 
-            images = await asyncio.gather(*(submit_one(i) for i in range(count)))
+            async def run_wave(indices: list[int]) -> dict[int, object]:
+                # Flow's UI starts variants as separate single-image RPCs with a
+                # short cadence instead of a burst. Apply the cadence relative
+                # to each wave, while Google still performs the generation work
+                # concurrently after each request has been accepted.
+                tasks = [
+                    submit_once(index, IMAGE_UI_SUBMIT_OFFSETS_S[position])
+                    for position, index in enumerate(indices)
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                return dict(zip(indices, results))
+
+            results = await run_wave(list(range(count)))
+            retry_indices = [
+                index for index, result in results.items()
+                if isinstance(result, fb.RpcError)
+                and result.rpcid == fb.RPC_GEN_IMAGE
+                and result.detail == [8]
+            ]
+            if retry_indices:
+                logger.warning(
+                    "Flow image wave had transient [8] for variant(s) %s; "
+                    "retrying after %.0fs cooldown once the first wave is fully settled",
+                    ",".join(str(i + 1) for i in retry_indices),
+                    IMAGE_TRANSIENT_RETRY_DELAY_S,
+                )
+                await asyncio.sleep(IMAGE_TRANSIENT_RETRY_DELAY_S)
+                retried = await run_wave(retry_indices)
+                results.update(retried)
+
+            images_by_index = {
+                index: result
+                for index, result in results.items()
+                if not isinstance(result, BaseException)
+            }
+            failures = {
+                index: result
+                for index, result in results.items()
+                if isinstance(result, BaseException)
+            }
+            if not images_by_index:
+                first_error = failures[min(failures)] if failures else fb.FlowBatchError(
+                    "Image generation returned no media url"
+                )
+                raise first_error
+
+            images = [images_by_index[index] for index in sorted(images_by_index)]
+
         except Exception as e:
             return _batch_error(e)
 
-        return {"status": 200, "data": {"media": [_as_media_record(i) for i in images]}}
+        data = {
+            "media": [_as_media_record(i) for i in images],
+            "requested_count": count,
+            "generated_count": len(images),
+            "complete": len(images) == count,
+        }
+        if failures:
+            data["failed_variants"] = [
+                {"index": index + 1, "error": str(error)}
+                for index, error in sorted(failures.items())
+            ]
+        return {"status": 200, "data": data}
 
     async def edit_image(self, prompt: str, source_media_id: str,
                           project_id: str,
