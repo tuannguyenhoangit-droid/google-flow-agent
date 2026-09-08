@@ -31,8 +31,12 @@ syntactically valid future wire model id through unchanged instead of silently
 coercing it to the default, so a newly exposed model can be selected before the
 next Flow Kit release once its id is known.
 
-`count` accepts 1-4, matching the Flow UI. Each output is a separate request
-item with its own seed.
+`count` accepts 1-4, matching the Flow UI. Flow itself implements x2/x3/x4
+as independent single-image `ogiZ0b` RPCs, each with a single-use reCAPTCHA;
+it also staggers x4 launches at roughly 0.0 / 0.5 / 1.5 / 2.5 seconds. FlowKit
+mirrors that behavior instead of sending an unofficial multi-item burst inside
+one RPC. Each variant keeps its own seed; when `seed` is supplied, later
+variants use a deterministic stride.
 
 ## Aspect ratios
 

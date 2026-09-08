@@ -72,19 +72,44 @@ class TestGenerateImages:
         assert item[2] == [["ref-a", None, None, None, fb.REF_TYPE_IMAGE],
                            ["ref-b", None, None, None, fb.REF_TYPE_IMAGE]]
 
-    async def test_explicit_model_and_count_reach_the_batch_wire(self, client):
-        second = "12345678-1234-1234-1234-1234567890ac"
+    async def test_explicit_model_and_count_dispatch_as_ui_style_rpcs(self, client, monkeypatch):
+        import agent.services.flow_client as module
+        sleeps = []
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
         client.responses[fb.RPC_GEN_IMAGE] = {
-            "data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL], [IMAGE_URL.replace(MEDIA, second)]])
+            "data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])
         }
         result = await client.generate_images(
             "a cat", PROJECT, image_model="HARBOR_SEAL", count=2, seed=100,
         )
-        items = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])[1]
-        assert len(items) == 2
-        assert [item[5] for item in items] == ["HARBOR_SEAL", "HARBOR_SEAL"]
-        assert [item[3] for item in items] == [100, 100 + 9973]
+        assert len(client.calls) == 2
+        items = [json.loads(json.loads(call["freq"])[0][0][1])[1] for call in client.calls]
+        assert [len(group) for group in items] == [1, 1]
+        assert [group[0][5] for group in items] == ["HARBOR_SEAL", "HARBOR_SEAL"]
+        assert [group[0][3] for group in items] == [100, 100 + 9973]
+        assert all(call["captcha"] == fb.CAPTCHA_IMAGE for call in client.calls)
+        assert sleeps == [module.IMAGE_UI_SUBMIT_OFFSETS_S[1]]
         assert len(result["data"]["media"]) == 2
+
+    async def test_count_four_uses_captured_ui_launch_offsets(self, client, monkeypatch):
+        import agent.services.flow_client as module
+        sleeps = []
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+        client.responses[fb.RPC_GEN_IMAGE] = {
+            "data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])
+        }
+        result = await client.generate_images("a cat", PROJECT, count=4)
+        assert len(client.calls) == 4
+        assert sleeps == list(module.IMAGE_UI_SUBMIT_OFFSETS_S[1:4])
+        assert len(result["data"]["media"]) == 4
 
     async def test_future_wire_model_is_not_silently_replaced(self, client):
         client.responses[fb.RPC_GEN_IMAGE] = {"data": envelope(fb.RPC_GEN_IMAGE, [[IMAGE_URL]])}

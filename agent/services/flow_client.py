@@ -33,6 +33,11 @@ from agent.services.headers import random_headers
 
 logger = logging.getLogger(__name__)
 
+# Captured from the current Flow image composer. x4 launches independent
+# ogiZ0b requests at roughly 0.0s, 0.5s, 1.5s and 2.5s rather than bursting
+# all variants at once. The generation work still overlaps after submission.
+IMAGE_UI_SUBMIT_OFFSETS_S = (0.0, 0.5, 1.5, 2.5)
+
 
 class FlowClient:
     """Sends commands to Chrome extension via WebSocket."""
@@ -588,20 +593,35 @@ class FlowClient:
                 prompt, project_id, aspect_ratio, user_paygate_tier, character_media_ids)
 
         try:
+            if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 4:
+                raise ValueError("image count must be an integer from 1 to 4")
             pid = self._batch_project_id(project_id)
-            freq = fb.image_request(
-                prompt, pid, count=count, aspect=aspect_ratio, seed=seed,
-                model=self._batch_image_model(image_model),
-                ref_media_ids=list(character_media_ids or []) or None,
-                base_media_id=base_media_id,
-            )
-            payload = await self._batch_payload(fb.RPC_GEN_IMAGE, freq, fb.CAPTCHA_IMAGE)
+            model = self._batch_image_model(image_model)
+            refs = list(character_media_ids or []) or None
+
+            async def submit_one(index: int):
+                # Flow UI implements x2/x3/x4 as independent single-image RPCs.
+                # It also staggers their launch to avoid an artificial burst.
+                offset = IMAGE_UI_SUBMIT_OFFSETS_S[index]
+                if offset:
+                    await asyncio.sleep(offset)
+                request_seed = seed + index * 9973 if seed is not None else None
+                freq = fb.image_request(
+                    prompt, pid, count=1, aspect=aspect_ratio, seed=request_seed,
+                    model=model, ref_media_ids=refs, base_media_id=base_media_id,
+                )
+                payload = await self._batch_payload(
+                    fb.RPC_GEN_IMAGE, freq, fb.CAPTCHA_IMAGE
+                )
+                generated = fb.read_images(payload)
+                if not generated:
+                    raise fb.FlowBatchError("Image generation returned no media url")
+                return generated[0]
+
+            images = await asyncio.gather(*(submit_one(i) for i in range(count)))
         except Exception as e:
             return _batch_error(e)
 
-        images = fb.read_images(payload)
-        if not images:
-            return {"status": 502, "error": "Image generation returned no media url"}
         return {"status": 200, "data": {"media": [_as_media_record(i) for i in images]}}
 
     async def edit_image(self, prompt: str, source_media_id: str,
