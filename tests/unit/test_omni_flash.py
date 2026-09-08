@@ -20,6 +20,7 @@ from agent.services.omni_flash import (
     extract_omni_workflows,
     generate_omni_flash_first_frame_video,
     generate_omni_flash_first_last_video,
+    generate_omni_flash_text_video,
     generate_omni_flash_video,
 )
 
@@ -130,6 +131,36 @@ def _mock_submit_client():
         }
     )
     return client
+
+
+@pytest.mark.asyncio
+async def test_batch_text_video_builds_4s_yhhmef_submit(monkeypatch):
+    monkeypatch.setattr(omni_flash, "USE_BATCH_RPC", True)
+    client = MagicMock()
+    client._batch_project_id.return_value = "11111111-2222-3333-4444-555555555555"
+    client._batch_payload = AsyncMock(return_value=[
+        None, 10, [], [[
+            "22222222-3333-4444-5555-666666666666",
+            "11111111-2222-3333-4444-555555555555",
+            "77777777-8888-9999-aaaa-bbbbbbbbbbbb", "CAE",
+        ]],
+    ])
+    with patch("agent.services.omni_flash.get_flow_client", return_value=client):
+        result = await generate_omni_flash_text_video(
+            prompt="A red paper boat drifts across a pond",
+            project_id="11111111-2222-3333-4444-555555555555",
+            duration_s=4,
+            aspect_ratio="VIDEO_ASPECT_RATIO_LANDSCAPE",
+        )
+    assert result["status"] == 200
+    assert result["data"]["model"] == "abra_t2v_4s"
+    assert result["data"]["duration_s"] == 4
+    assert result["data"]["flowkitPolling"]["mode"] == "batch_media"
+    rpcid, freq, captcha = client._batch_payload.await_args.args[:3]
+    assert rpcid == omni_flash.fb.RPC_GEN_VIDEO_TEXT
+    assert captcha == omni_flash.fb.CAPTCHA_VIDEO
+    payload = __import__("json").loads(__import__("json").loads(freq)[0][0][1])
+    assert payload[0][0][1] == "abra_t2v_4s"
 
 
 @pytest.mark.asyncio
@@ -354,6 +385,23 @@ async def test_media_redirect_fetch_requests_url_only_mode():
 
 
 @pytest.mark.asyncio
+async def test_batch_omni_poll_uses_as29s_media(monkeypatch):
+    monkeypatch.setattr(omni_flash, "USE_BATCH_RPC", True)
+    client = MagicMock()
+    client.get_media = AsyncMock(return_value={
+        "status": 200,
+        "data": {"video": {"fifeUrl": "https://flow-content.google/video/media-1?Signature=test"}},
+    })
+    with patch("agent.services.omni_flash.get_flow_client", return_value=client):
+        result = await check_omni_flash_status([{
+            "name": "workflow-1", "primary_media_id": "media-1", "project_id": "project-1",
+        }])
+    assert result["done"] is True
+    assert result["workflows"][0]["media"]["resolved_via"] == "as29s"
+    client.get_media.assert_awaited_once_with("media-1")
+
+
+@pytest.mark.asyncio
 async def test_omni_poll_pending_uses_project_snapshot_not_legacy_transports():
     client = MagicMock()
     client._send = AsyncMock(return_value=_project_response())
@@ -477,7 +525,7 @@ async def test_submit_rejects_empty_reference_set():
         )
 
 
-class TestBatchPathIsRefusedRatherThanAttempted:
+class TestUnportedOmniBatchModesAreRefusedRatherThanAttempted:
     """Flow stopped minting the bearer these endpoints need, and no Omni
     payload has been captured off the new frontend. Saying so beats a 401
     five retries deep."""
@@ -513,14 +561,8 @@ class TestBatchPathIsRefusedRatherThanAttempted:
         assert "UNSUPPORTED_ON_BATCH_API" in result["error"]
         client._send.assert_not_called()
 
-    async def test_polling_names_the_gap_and_sends_nothing(self, client):
-        result = await check_omni_flash_status(
-            [{"name": "wf", "primary_media_id": "mid", "project_id": "pid"}])
-        assert "UNSUPPORTED_ON_BATCH_API" in result["error"]
-        client._send.assert_not_called()
-
-    async def test_the_message_points_at_both_ways_out(self, client):
+    async def test_the_message_points_to_supported_text_to_video(self, client):
         result = await generate_omni_flash_video(
             reference_media_ids=["a"], prompt="go", project_id="pid")
-        assert "docs/CAPTURE.md" in result["error"]
-        assert "USE_BATCH_RPC=0" in result["error"]
+        assert "text-to-video is supported" in result["error"]
+        assert "reference-to-video" in result["error"]

@@ -9,6 +9,7 @@ from agent.services.omni_flash import (
     check_omni_flash_status,
     generate_omni_flash_first_frame_video,
     generate_omni_flash_first_last_video,
+    generate_omni_flash_text_video,
     generate_omni_flash_video,
 )
 
@@ -51,6 +52,15 @@ class GenerateVideoRefsRequest(BaseModel):
 
 class GenerateOmniFlashVideoRequest(BaseModel):
     reference_media_ids: list[str]
+    prompt: str
+    project_id: str
+    scene_id: str = ""
+    duration_s: int = 8
+    aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT"
+    user_paygate_tier: str = "PAYGATE_TIER_ONE"
+
+
+class GenerateOmniFlashTextVideoRequest(BaseModel):
     prompt: str
     project_id: str
     scene_id: str = ""
@@ -216,6 +226,29 @@ async def generate_video_refs(body: GenerateVideoRefsRequest):
 
     if result.get("error") or (isinstance(result.get("status"), int) and result["status"] >= 400):
         raise HTTPException(result.get("status", 502), result.get("error", result.get("data")))
+    return result.get("data", result)
+
+
+@router.post("/generate-video-omni-text")
+async def generate_video_omni_text(body: GenerateOmniFlashTextVideoRequest):
+    """Submit Omni 1.1 Flash text-to-video on flow.google.com.
+
+    Durations 4/6/8/10 seconds map to Flow's ``abra_t2v_<N>s`` models.
+    """
+    client = get_flow_client()
+    if not client.connected:
+        raise HTTPException(503, "Extension not connected")
+    try:
+        result = await generate_omni_flash_text_video(**body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if result.get("error") or (
+        isinstance(result.get("status"), int) and result["status"] >= 400
+    ):
+        raise HTTPException(
+            result.get("status", 502),
+            result.get("error", result.get("data")),
+        )
     return result.get("data", result)
 
 

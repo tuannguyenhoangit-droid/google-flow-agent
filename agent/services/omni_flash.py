@@ -27,6 +27,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from agent.config import USE_BATCH_RPC
+from agent.services import flow_batch as fb
 from agent.services.flow_client import get_flow_client
 from agent.services.headers import random_headers
 
@@ -39,10 +40,10 @@ _MODELS_FILE = Path(__file__).parent.parent / "models.json"
 #: captured off the new frontend, so on the batch path these fail with a
 #: name rather than dying on a 401 five retries deep.
 _UNSUPPORTED_ON_BATCH = (
-    "UNSUPPORTED_ON_BATCH_API: Omni Flash — it speaks the pre-migration REST "
-    "and tRPC endpoints, and no batchexecute payload for it has been captured; "
-    "see docs/CAPTURE.md. Use the Veo path (model_family=veo), or set "
-    "USE_BATCH_RPC=0 on a profile that still holds a bearer token."
+    "UNSUPPORTED_ON_BATCH_API: Omni Flash frame/reference generation is not yet "
+    "ported to flow.google.com batchexecute. Omni text-to-video is supported on "
+    "the batch path; frame-to-video, start+end and reference-to-video still need "
+    "their migrated payload captures."
 )
 
 
@@ -215,6 +216,54 @@ def _annotate_polling(result: dict, project_id: str) -> dict:
             "workflows": workflows,
         }
     return result
+
+
+async def generate_omni_flash_text_video(
+    prompt: str,
+    project_id: str,
+    scene_id: str = "",
+    duration_s: int = 8,
+    aspect_ratio: str = "VIDEO_ASPECT_RATIO_PORTRAIT",
+    user_paygate_tier: str = "PAYGATE_TIER_ONE",
+    seed: int | None = None,
+) -> dict:
+    """Submit Omni 1.1 Flash text-to-video on the migrated Flow batch API."""
+    _validate_duration(duration_s)
+    _validate_aspect(aspect_ratio)
+    if not USE_BATCH_RPC:
+        return {"error": "Omni text-to-video is implemented on the flow.google.com batch path only"}
+
+    client = get_flow_client()
+    try:
+        pid = client._batch_project_id(project_id)
+        model_key = f"abra_t2v_{duration_s}s"
+        freq = fb.text_video_request(prompt, pid, aspect=aspect_ratio, model=model_key)
+        payload = await client._batch_payload(
+            fb.RPC_GEN_VIDEO_TEXT, freq, fb.CAPTCHA_VIDEO, timeout=120)
+        submitted = fb.read_text_video_submit(payload)
+    except Exception as exc:
+        return {"status": 502, "error": f"{type(exc).__name__}: {exc}"}
+
+    media_id = submitted["media_id"]
+    workflow = {
+        "name": submitted.get("workflow_id") or media_id,
+        "primary_media_id": media_id,
+        "project_id": pid,
+    }
+    return {
+        "status": 200,
+        "data": {
+            "media": [{"name": media_id}],
+            "workflows": [workflow],
+            "model": model_key,
+            "duration_s": duration_s,
+            "flowkitPolling": {
+                "mode": "batch_media",
+                "project_id": pid,
+                "workflows": [workflow],
+            },
+        },
+    }
 
 
 async def _submit_omni_frame_video(
@@ -398,20 +447,68 @@ async def generate_omni_flash_video(
     return _annotate_polling(result, project_id)
 
 
+async def _check_omni_batch_media(
+    workflows: list[dict],
+    include_encoded_video: bool = False,
+    project_id: str = "",
+) -> dict:
+    normalized = [item for workflow in (workflows or []) if (item := _normalize_workflow(workflow))]
+    if not normalized:
+        raise ValueError("Omni polling requires workflow descriptors with name and primary_media_id")
+    resolved_project_id = project_id or next(
+        (item.get("project_id", "") for item in normalized if item.get("project_id")), "")
+    client = get_flow_client()
+    items = []
+    for workflow in normalized:
+        media_id = workflow["primary_media_id"]
+        response = await client.get_media(media_id)
+        data = response.get("data") if isinstance(response, dict) else None
+        video = data.get("video") if isinstance(data, dict) else None
+        url = video.get("fifeUrl") if isinstance(video, dict) else None
+        if isinstance(url, str) and url.startswith("https://flow-content.google/video/"):
+            media = {
+                "media_id": media_id,
+                "url": url,
+                "encoded_video_available": False,
+                "resolved_via": "as29s",
+            }
+            if include_encoded_video:
+                media["encoded_video"] = None
+            items.append({
+                "name": workflow["name"],
+                "primary_media_id": media_id,
+                "project_id": workflow.get("project_id") or resolved_project_id,
+                "done": True,
+                "status": "MEDIA_GENERATION_STATUS_SUCCESSFUL",
+                "error": None,
+                "media": media,
+            })
+        else:
+            items.append({
+                "name": workflow["name"],
+                "primary_media_id": media_id,
+                "project_id": workflow.get("project_id") or resolved_project_id,
+                "done": False,
+                "status": "PENDING",
+                "error": None,
+            })
+    all_done = bool(items) and all(item["done"] for item in items)
+    return {
+        "project_id": resolved_project_id or None,
+        "done": all_done,
+        "status": "COMPLETED" if all_done else "PENDING",
+        "workflows": items,
+    }
+
+
 async def check_omni_flash_status(
     workflows: list[dict],
     include_encoded_video: bool = False,
     project_id: str = "",
 ) -> dict:
-    """Perform one non-blocking poll pass for Omni workflow-backed jobs.
-
-    Flow's production UI exposes workflow status through its authenticated
-    ``flow.projectInitialData`` tRPC response. The old ``/v1/media`` transport
-    currently returns ``INVALID_ARGUMENT`` for these workflow media IDs.
-    """
-    blocked = _batch_path_blocks_omni()
-    if blocked:
-        return blocked
+    """Perform one non-blocking poll pass for Omni workflow-backed jobs."""
+    if USE_BATCH_RPC:
+        return await _check_omni_batch_media(workflows, include_encoded_video, project_id)
     normalized = []
     for workflow in workflows or []:
         item = _normalize_workflow(workflow)
