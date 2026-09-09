@@ -40,6 +40,8 @@ RPC_OPERATION = "jwpduf"
 RPC_PROJECT_MEDIA = "Zzl0ze"
 RPC_MEDIA = "as29s"
 RPC_UPLOAD_IMAGE = "maseQ"
+RPC_CREATE_PROJECT = "jHPbke"
+RPC_DELETE_PROJECT = "QI2zvc"
 
 CAPTCHA_IMAGE = "IMAGE_GENERATION"
 CAPTCHA_VIDEO = "VIDEO_GENERATION"
@@ -382,6 +384,23 @@ def media_request(media_id: str) -> str:
     return build_envelope(RPC_MEDIA, [media_id])
 
 
+def create_project_request(title: str) -> str:
+    """Make a new Flow project titled ``title``.
+
+    Captured off the UI's "New project" button. Inner payload is
+    ``["projects/*", [None, [title]], [None, SURFACE_ID]]`` — the trailing ``22``
+    is the same surface id every other call stamps, not a tool type. This path
+    carries no tool slot, so it can only ask for the surface's default; a caller
+    that needs a specific tool cannot get it here (see FlowClient.create_project).
+    """
+    return build_envelope(RPC_CREATE_PROJECT, ["projects/*", [None, [title]], [None, SURFACE_ID]])
+
+
+def delete_project_request(project_id: str) -> str:
+    """Delete a Flow project. Inner payload is ``["projects/<uuid>"]``."""
+    return build_envelope(RPC_DELETE_PROJECT, [f"projects/{project_id}"])
+
+
 # ── response readers ─────────────────────────────────────────────────────────
 
 def _walk_strings(node: Any):
@@ -427,6 +446,25 @@ def read_uploaded_media_id(payload: Any) -> str:
     if not isinstance(media_id, str) or not media_id:
         raise FlowBatchError("upload response carried no media id")
     return media_id
+
+
+#: A Flow project id is a plain uuid; the create response leads with it.
+_PROJECT_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def read_created_project_id(payload: Any) -> str:
+    """The uuid of a freshly created project.
+
+    Captured shape: ``["<uuid>", ["<title>"]]`` — the id leads the payload and
+    equals the ``/project/<uuid>`` the UI navigates to. Read that one slot and
+    nothing else: a 200 with the id somewhere unexpected is accepted and then
+    silently useless, so a non-uuid here is a failure rather than a cue to scan
+    the envelope for the first uuid-looking string.
+    """
+    first = payload[0] if isinstance(payload, list) and payload else None
+    if isinstance(first, str) and _PROJECT_ID_RE.fullmatch(first):
+        return first
+    raise FlowBatchError(f"create response carried no project id: {payload!r}")
 
 
 def read_operation(payload: Any) -> Operation:

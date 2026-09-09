@@ -146,6 +146,10 @@ async def narrate_video(vid: str, body: NarrateVideoRequest):
                 logger.info("Auto-resolved ref_text from template '%s'", tmpl["name"])
                 break
 
+    # The project/template fallback is operator data too; revalidate after resolution so remote TTS
+    # can never read and upload a path that bypassed the request-body check above.
+    if ref_audio:
+        _validate_ref_audio(ref_audio)
     project_name = project.get("name") or "unnamed_project"
     project_slug = slugify(project_name)
     out_dir = OUTPUT_DIR / project_slug / "tts"

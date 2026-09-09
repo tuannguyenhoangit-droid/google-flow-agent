@@ -560,13 +560,49 @@ class FlowClient:
         return FLOW_PROJECT_ID or None
 
     async def create_project(self, project_title: str, tool_name: str = "PINHOLE") -> dict:
+        """Create a Flow project, or reuse the pinned one.
+
+        Pin precedence: a pinned FLOW_PROJECT_ID (or a uuid the caller passes) is
+        reused rather than minting a new project every call — the route only
+        falls through to here when nothing is pinned. Unpinned, the batch path
+        now creates one for real via the ``jHPbke`` RPC captured off the UI's
+        "New project" button and hands back its uuid. ``tool_name`` is honoured
+        only on the legacy path; the batch create carries no tool slot, so a
+        non-default value is rejected rather than silently ignored.
+        """
         if not USE_BATCH_RPC:
             return await self._legacy_create_project(project_title, tool_name)
-        pid = self.flow_project_id()
-        if not pid:
-            return {"error": _UNSUPPORTED_CREATE_PROJECT}
-        logger.info("Reusing pinned Flow project %s for '%s'", pid[:12], project_title)
+        pinned = self.flow_project_id()
+        if pinned:
+            logger.info("Reusing pinned Flow project %s for '%s'", pinned[:12], project_title)
+            return {"status": 200, "data": {"projectId": pinned}}
+        if tool_name and tool_name != "PINHOLE":
+            return {"error": "UNSUPPORTED_ON_BATCH_API: batch create carries no tool slot, "
+                             f"cannot honour tool_name={tool_name!r}"}
+        try:
+            payload = await self._batch_payload(fb.RPC_CREATE_PROJECT,
+                                                fb.create_project_request(project_title))
+            pid = fb.read_created_project_id(payload)
+        except (fb.FlowBatchError, fb.RpcError) as exc:
+            return {"error": f"CREATE_PROJECT_FAILED: {exc}"}
+        logger.info("Flow project created %s for '%s'", pid[:12], project_title)
         return {"status": 200, "data": {"projectId": pid}}
+
+    async def delete_project(self, project_id: str) -> dict:
+        """Delete a Flow project via the ``QI2zvc`` RPC (batch path only).
+
+        A successful delete answers with an empty payload — there is nothing to
+        read back, so a clean return is success and a transport error surfaces as
+        ``{"error": …}`` like the rest of the client.
+        """
+        if not USE_BATCH_RPC:
+            return {"error": "UNSUPPORTED_ON_BATCH_API: delete_project needs the batchexecute transport"}
+        try:
+            await self._batch_payload(fb.RPC_DELETE_PROJECT, fb.delete_project_request(project_id))
+        except (fb.FlowBatchError, fb.RpcError) as exc:
+            return {"error": f"DELETE_PROJECT_FAILED: {exc}"}
+        logger.info("Flow project deleted %s", project_id[:12])
+        return {"status": 200, "data": {"projectId": project_id}}
 
     async def generate_images(self, prompt: str, project_id: str,
                                aspect_ratio: str = "IMAGE_ASPECT_RATIO_PORTRAIT",
@@ -1206,12 +1242,6 @@ class FlowClient:
 # the poller and the DB writers never learn which transport ran.
 
 _CAPTURE_HINT = "see docs/CAPTURE.md to record its payload off the new UI"
-
-_UNSUPPORTED_CREATE_PROJECT = (
-    "NO_FLOW_PROJECT: Flow's project.createProject endpoint went with the September 2026 "
-    "migration, so Flow Kit cannot create one. Make a project in the Flow UI, then either "
-    "pass its uuid as flow_project_id or pin it as FLOW_PROJECT_ID."
-)
 
 
 def _unsupported(feature: str, why: str) -> str:

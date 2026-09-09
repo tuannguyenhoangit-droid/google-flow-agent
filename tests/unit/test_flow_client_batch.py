@@ -311,12 +311,73 @@ class TestProjectAndCredits:
         result = await client.create_project("My Film")
         assert result["data"]["projectId"] == PROJECT
 
-    async def test_create_project_without_a_pin_explains_itself(self, client, monkeypatch):
+    async def test_create_project_without_a_pin_creates_one(self, client, monkeypatch):
+        """Unpinned, the batch path mints a real project and hands back its uuid."""
         import agent.services.flow_client as module
         monkeypatch.setattr(module, "FLOW_PROJECT_ID", "")
+        new_pid = "8e30afb8-92d0-4d0b-b652-f0a79faca9f5"
+        client.responses[fb.RPC_CREATE_PROJECT] = {
+            "data": envelope(fb.RPC_CREATE_PROJECT, [new_pid, ["My Film"]])
+        }
         result = await client.create_project("My Film")
-        assert "NO_FLOW_PROJECT" in result["error"]
-        assert "FLOW_PROJECT_ID" in result["error"]
+        assert result["data"]["projectId"] == new_pid
+
+    async def test_create_project_sends_the_captured_request(self, client, monkeypatch):
+        """The jHPbke envelope carries ["projects/*", [None, [title]], [None, 22]]."""
+        import agent.services.flow_client as module
+        monkeypatch.setattr(module, "FLOW_PROJECT_ID", "")
+        client.responses[fb.RPC_CREATE_PROJECT] = {
+            "data": envelope(fb.RPC_CREATE_PROJECT, ["8e30afb8-92d0-4d0b-b652-f0a79faca9f5", ["My Film"]])
+        }
+        await client.create_project("My Film")
+        assert client.calls[0]["rpcid"] == fb.RPC_CREATE_PROJECT
+        inner = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])
+        assert inner == ["projects/*", [None, ["My Film"]], [None, fb.SURFACE_ID]]
+
+    async def test_create_project_rejects_an_id_less_response(self, client, monkeypatch):
+        """A 200 whose lead slot is not a uuid is a failure, not a guess (accepted != used)."""
+        import agent.services.flow_client as module
+        monkeypatch.setattr(module, "FLOW_PROJECT_ID", "")
+        client.responses[fb.RPC_CREATE_PROJECT] = {
+            "data": envelope(fb.RPC_CREATE_PROJECT, ["not-a-uuid", ["My Film"]])
+        }
+        result = await client.create_project("My Film")
+        assert "CREATE_PROJECT_FAILED" in result["error"]
+
+    async def test_create_project_refuses_a_non_default_tool_on_batch(self, client, monkeypatch):
+        """The batch create has no tool slot, so it will not pretend to honour one."""
+        import agent.services.flow_client as module
+        monkeypatch.setattr(module, "FLOW_PROJECT_ID", "")
+        result = await client.create_project("My Film", tool_name="WHISK")
+        assert "UNSUPPORTED_ON_BATCH_API" in result["error"]
+        assert not client.calls, "nothing should have been sent"
+
+    async def test_create_project_uses_the_legacy_path_when_batch_is_off(self, client, monkeypatch):
+        """USE_BATCH_RPC=0 still routes to the (post-mortem) tRPC create, untouched."""
+        import agent.services.flow_client as module
+        monkeypatch.setattr(module, "USE_BATCH_RPC", False)
+        seen = {}
+        async def fake_legacy(title, tool):
+            seen["args"] = (title, tool)
+            return {"status": 200, "data": {"projectId": "legacy"}}
+        client._legacy_create_project = fake_legacy
+        result = await client.create_project("My Film", tool_name="PINHOLE")
+        assert seen["args"] == ("My Film", "PINHOLE")
+        assert result["data"]["projectId"] == "legacy"
+        assert not client.calls, "the batch transport should be untouched"
+
+    async def test_delete_project_calls_QI2zvc_with_the_project_path(self, client):
+        client.responses[fb.RPC_DELETE_PROJECT] = {"data": envelope(fb.RPC_DELETE_PROJECT, [])}
+        result = await client.delete_project(PROJECT)
+        assert client.calls[0]["rpcid"] == fb.RPC_DELETE_PROJECT
+        inner = json.loads(json.loads(client.calls[0]["freq"])[0][0][1])
+        assert inner == [f"projects/{PROJECT}"]
+        assert result["data"]["projectId"] == PROJECT
+
+    async def test_delete_project_surfaces_a_transport_error(self, client):
+        client.responses[fb.RPC_DELETE_PROJECT] = {"error": "NO_FLOW_TAB"}
+        result = await client.delete_project(PROJECT)
+        assert "DELETE_PROJECT_FAILED" in result["error"]
 
     async def test_credits_answers_the_configured_tier_rather_than_guessing(self, client):
         result = await client.get_credits()

@@ -231,3 +231,26 @@ class TestResolvers:
                     from agent.config import VIDEO_MODELS
                     key = VIDEO_MODELS.get(tier, {}).get(gen, {}).get(aspect)
                     assert fb.resolve_video_model(key) in fb.VIDEO_MODELS
+
+
+class TestProjectRpcs:
+    def test_create_request_carries_the_captured_slots(self):
+        assert inner(fb.create_project_request("My Film")) == [
+            "projects/*", [None, ["My Film"]], [None, fb.SURFACE_ID]]
+
+    def test_delete_request_names_the_project_path(self):
+        assert inner(fb.delete_project_request("11111111-2222-3333-4444-555555555555")) == [
+            "projects/11111111-2222-3333-4444-555555555555"]
+
+    def test_read_created_id_takes_the_leading_uuid(self):
+        pid = "8e30afb8-92d0-4d0b-b652-f0a79faca9f5"
+        assert fb.read_created_project_id([pid, ["My Film"]]) == pid
+
+    def test_read_created_id_rejects_a_trailing_newline(self):
+        r"""`$` would let "<uuid>\n" through; fullmatch must reject it."""
+        with pytest.raises(fb.FlowBatchError):
+            fb.read_created_project_id(["8e30afb8-92d0-4d0b-b652-f0a79faca9f5\n", ["x"]])
+
+    def test_read_created_id_rejects_a_non_uuid_lead(self):
+        with pytest.raises(fb.FlowBatchError):
+            fb.read_created_project_id([["My Film"], "not-a-uuid"])

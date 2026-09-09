@@ -711,18 +711,34 @@ Optional narrator voice for scenes. Uses [OmniVoice](https://github.com/tuannguy
 
 ### Setup
 
-See `skills/fk-gen-tts-template.md` for full install guide. Quick version:
+See `skills/fk-gen-tts-template.md` for the full install guide. The launcher uses the FlowKit venv
+at `$HOME/.venvs/flowkit`; install OmniVoice there:
 
 ```bash
-pip install torch==2.8.0 torchaudio==2.8.0   # or +cu128 for NVIDIA
-pip install omnivoice
-python3 -c "from omnivoice import OmniVoice; print('OK')"
+$HOME/.venvs/flowkit/bin/python -m pip install torch==2.8.0 torchaudio==2.8.0
+$HOME/.venvs/flowkit/bin/python -m pip install omnivoice
+$HOME/.venvs/flowkit/bin/python -c 'from omnivoice import OmniVoice; print("OmniVoice OK")'
 ```
 
-If OmniVoice is in a separate venv, point to it:
+The local subprocess defaults to the interpreter that launched FlowKit, so `TTS_PYTHON_BIN` is
+optional. Set it only when OmniVoice intentionally lives in a separate venv.
+
+### Optional remote OmniVoice API
+
+`agent/omnivoice_api.py` is a standalone warm FastAPI service. It loads the model once and exposes
+`POST /v1/tts` as multipart form data (`text`, `speed`, optional `instruct`, `ref_text`, and WAV
+file `ref_audio`), returning raw `audio/wav` bytes. Run it from the FlowKit checkout:
+
 ```bash
-export TTS_PYTHON_BIN=/path/to/omnivoice-venv/bin/python3
+$HOME/.venvs/flowkit/bin/python -m pip install python-multipart
+./flowkit/run-omnivoice-api.sh
 ```
+
+The main FlowKit API can call it by setting `TTS_BACKEND=remote` and `TTS_REMOTE_URL=http://127.0.0.1:8200`.
+The remote backend reads each local `ref_audio` WAV, uploads its bytes, validates the returned WAV,
+and writes it atomically to the existing local output path. For a non-loopback deployment, set
+`OMNIVOICE_API_TOKEN` on the inference service and the matching `TTS_REMOTE_TOKEN` on FlowKit,
+use HTTPS, and do not expose the service publicly without authentication.
 
 ### Workflow
 
@@ -731,7 +747,8 @@ export TTS_PYTHON_BIN=/path/to/omnivoice-venv/bin/python3
 3. **Generate narration** — `/fk-gen-narrator` — voice-clones the template for each scene
 4. **Concat with narration** — `/fk-concat-fit-narrator` — trims scene videos to match TTS duration
 
-CPU-only recommended (MPS produces artifacts). ~15-30s per scene.
+CPU-only is recommended for the local backend (MPS produces artifacts). Remote mode is serialized
+per scene and keeps the model warm in the standalone inference service.
 
 ## YouTube Upload Pipeline
 
